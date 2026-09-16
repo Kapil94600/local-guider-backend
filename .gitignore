@@ -1,0 +1,12 @@
+node_modules/
+package-lock.json
+.env
+.env.*
+logs/
+uploads/
+dist/
+.DS_Store
+.vscode/
+.idea/
+*.log
+firebase-service-account.json
