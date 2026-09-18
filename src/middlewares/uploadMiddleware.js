@@ -27,9 +27,14 @@ export const uploadMultiple = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-// ✅ KYC fields (role request) — 4 named fields
-export const uploadKyc = multer({
+// ✅ Role request — 4 named files (KYC) — used as direct middleware
+export const uploadRoleRequestFiles = multer({
   storage,
   fileFilter,
   limits: { fileSize: 5 * 1024 * 1024 },
-});
+}).fields([
+  { name: "profilePhoto", maxCount: 1 },
+  { name: "selfie", maxCount: 1 },
+  { name: "idFront", maxCount: 1 },
+  { name: "idBack", maxCount: 1 },
+]);
