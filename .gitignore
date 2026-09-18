@@ -17,3 +17,7 @@ firebase-service-account.json
 .env.production
 
 .env.*.local
+
+uploads-backup-*/
+uploads-migration-map.json
+
