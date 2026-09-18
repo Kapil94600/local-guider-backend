@@ -1,12 +1,18 @@
 // src/modules/uploads/upload.routes.js
 import express from "express";
 import { authenticate } from "../../middlewares/authMiddleware.js";
-import { upload } from "../../middlewares/uploadMiddleware.js";
+import {
+  upload,
+  uploadMultiple,
+} from "../../middlewares/uploadMiddleware.js";
 import { uploadToCloudinary } from "../../utils/cloudinaryUpload.js";
 
 const router = express.Router();
 
-// ⚡ Single image
+// ═══════════════════════════════════════════
+// ✅ POST /api/v1/uploads — Single image
+// Field name: "image"
+// ═══════════════════════════════════════════
 router.post(
   "/",
   authenticate,
@@ -14,33 +20,69 @@ router.post(
   async (req, res, next) => {
     try {
       if (!req.file) {
-        return res.status(400).json({ success: false, message: "No file uploaded" });
+        return res.status(400).json({
+          success: false,
+          message: "No file uploaded",
+        });
       }
-      const url = await uploadToCloudinary(req.file.buffer, "local-guider/uploads");
-      return res.status(200).json({ success: true, url, data: { url } });
+
+      const folder = req.body.folder || "local-guider/uploads";
+      const url = await uploadToCloudinary(req.file.buffer, folder);
+
+      return res.status(200).json({
+        success: true,
+        url,
+        data: { url },
+      });
     } catch (error) {
-      console.error("❌ Upload error:", error.message);
-      next(error);
+      console.error("❌ Upload single error:", error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Upload failed",
+      });
     }
   }
 );
 
-// ⚡ Multiple images
+// ═══════════════════════════════════════════
+// ✅ POST /api/v1/uploads/multiple — Multiple images
+// Field name: "files" (max 10)
+// Frontend GalleryManager isko hit karta hai
+// ═══════════════════════════════════════════
 router.post(
   "/multiple",
   authenticate,
-  upload.array("images", 5),
+  uploadMultiple.array("files", 10),
   async (req, res, next) => {
     try {
       if (!req.files || req.files.length === 0) {
-        return res.status(400).json({ success: false, message: "No files uploaded" });
+        return res.status(400).json({
+          success: false,
+          message: "No files uploaded",
+        });
       }
+
+      const folder = req.body.folder || "local-guider/gallery";
+
+      // ✅ Parallel upload to Cloudinary
       const urls = await Promise.all(
-        req.files.map((file) => uploadToCloudinary(file.buffer, "local-guider/uploads"))
+        req.files.map((file) => uploadToCloudinary(file.buffer, folder))
       );
-      return res.status(200).json({ success: true, urls, data: { urls } });
+
+      return res.status(200).json({
+        success: true,
+        message: `${urls.length} file(s) uploaded successfully`,
+        data: {
+          urls,              // ✅ Frontend GalleryManager isko use karta hai
+          files: urls.map((u) => ({ url: u })),
+        },
+      });
     } catch (error) {
-      next(error);
+      console.error("❌ Upload multiple error:", error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Upload failed",
+      });
     }
   }
 );

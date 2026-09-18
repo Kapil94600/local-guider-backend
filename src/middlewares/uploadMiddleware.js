@@ -1,32 +1,35 @@
 // src/middlewares/uploadMiddleware.js
 import multer from "multer";
 
-// ═══════════════════════════════════════════
-// ⚡ MEMORY storage — file disk pe save nahi hogi
-// Cloudinary pe directly upload hoga (permanent)
-// ═══════════════════════════════════════════
+// ✅ Memory storage — file disk pe save nahi hogi, Cloudinary pe direct jayegi
 const storage = multer.memoryStorage();
 
-// ═══════════════════════════════════════════
-// Base upload (image only, 5MB max)
-// ═══════════════════════════════════════════
+// ✅ File filter — only images
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith("image/")) {
+    cb(null, true);
+  } else {
+    cb(new Error("Only image files are allowed"), false);
+  }
+};
+
+// ✅ Single file upload (field name: "image")
 export const upload = multer({
   storage,
+  fileFilter,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith("image/")) {
-      return cb(new Error("Only image files allowed"));
-    }
-    cb(null, true);
-  },
 });
 
-// ═══════════════════════════════════════════
-// ✅ Role request ke 4 files
-// ═══════════════════════════════════════════
-export const uploadRoleRequestFiles = upload.fields([
-  { name: "selfie", maxCount: 1 },
-  { name: "idFront", maxCount: 1 },
-  { name: "idBack", maxCount: 1 },
-  { name: "profilePhoto", maxCount: 1 },
-]);
+// ✅ Multiple files upload (field name: "files", max 10)
+export const uploadMultiple = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+// ✅ KYC fields (role request) — 4 named fields
+export const uploadKyc = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
