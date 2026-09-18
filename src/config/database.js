@@ -3,8 +3,16 @@ import { Sequelize } from "sequelize";
 import { env } from "./env.js";
 import { logger } from "../utils/logger.js";
 
-// ✅ Production me DATABASE_URL (Neon) use karo
-// Local dev me individual fields use karo (fallback)
+// ⚡ Shared pool config
+const poolConfig = {
+  max: 20,
+  min: 5,           // ✅ 5 warm connections — cold start avoid
+  acquire: 30000,
+  idle: 10000,
+  evict: 15000,
+};
+
+// ✅ Production me DATABASE_URL (Neon), local dev me individual fields
 const sequelize = env.DATABASE_URL
   ? new Sequelize(env.DATABASE_URL, {
       dialect: "postgres",
@@ -12,10 +20,15 @@ const sequelize = env.DATABASE_URL
       dialectOptions: {
         ssl: {
           require: true,
-          rejectUnauthorized: false, // Neon ke liye zaroori
+          rejectUnauthorized: false, // Neon
         },
+        // ⚡ Neon ke liye keepAlive
+        keepAlive: true,
       },
-      pool: { max: 20, min: 5, acquire: 30000, idle: 10000 },
+      pool: poolConfig,
+      retry: {
+        max: 3,
+      },
     })
   : new Sequelize(
       env.DB_NAME,
@@ -26,7 +39,7 @@ const sequelize = env.DATABASE_URL
         port: parseInt(env.DB_PORT, 10) || 5432,
         dialect: "postgres",
         logging: false,
-        pool: { max: 20, min: 5, acquire: 30000, idle: 10000 },
+        pool: poolConfig,
       }
     );
 

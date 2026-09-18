@@ -1,3 +1,4 @@
+// src/modules/auth/auth.service.js
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import admin from "../../config/firebase.js";
@@ -11,8 +12,8 @@ import {
   getRefreshToken,
   revokeRefreshToken,
   findUserByResetToken,
+  findUserByGoogleId,
 } from "./auth.repository.js";
-import { findUserByGoogleId } from "./auth.repository.js";
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -21,16 +22,56 @@ import {
 import { sendEmail } from "../../utils/emailService.js";
 import { env } from "../../config/env.js";
 
-// In-memory OTP store (dev/testing ke liye)
+// ═══════════════════════════════════════════
+// ⚡ CACHE — Firebase auth instance (ek baar)
+// ═══════════════════════════════════════════
+let firebaseAuth = null;
+const getFirebaseAuth = () => {
+  if (!firebaseAuth) firebaseAuth = admin.auth();
+  return firebaseAuth;
+};
+
+// ═══════════════════════════════════════════
+// ⚡ CONSTANTS
+// ═══════════════════════════════════════════
+const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const BCRYPT_ROUNDS = 10;
+const OTP_TTL_MS = 5 * 60 * 1000;
+
+// In-memory OTP store (dev/testing)
 const otpStore = new Map();
 
 // ═══════════════════════════════════════════
-// ✅ Register
+// ⚡ HELPERS
+// ═══════════════════════════════════════════
+const generateTokensForUser = (user) => ({
+  accessToken: generateAccessToken(user),
+  refreshToken: generateRefreshToken(user),
+});
+
+// ⚡ Background refresh token save (non-blocking)
+const saveRefreshTokenInBackground = (userId, refreshToken) => {
+  saveRefreshToken({
+    userId,
+    token: refreshToken,
+    expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+  }).catch((err) =>
+    console.error("⚠️ Background refresh save failed:", err.message)
+  );
+};
+
+// ═══════════════════════════════════════════
+// ✅ Register — optimized
 // ═══════════════════════════════════════════
 export const registerUser = async (payload) => {
-  const existingUser = await findUserByEmail(payload.email);
+  // ⚡ Parallel: email check + password hash
+  const [existingUser, hashedPassword] = await Promise.all([
+    findUserByEmail(payload.email),
+    bcrypt.hash(payload.password, BCRYPT_ROUNDS),
+  ]);
+
   if (existingUser) throw new Error("User already exists");
-  const hashedPassword = await bcrypt.hash(payload.password, 10);
+
   const user = await createUser({
     firstName: payload.firstName,
     lastName: payload.lastName || null,
@@ -39,39 +80,38 @@ export const registerUser = async (payload) => {
     passwordHash: hashedPassword,
     role: "USER",
   });
-  await createWallet(user.id);
-  const accessToken = generateAccessToken(user);
-  const refreshToken = generateRefreshToken(user);
-  await saveRefreshToken({
-    userId: user.id,
-    token: refreshToken,
-    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-  });
-  return { user, accessToken, refreshToken };
+
+  // ⚡ Parallel: wallet + JWT gen
+  const [, tokens] = await Promise.all([
+    createWallet(user.id),
+    Promise.resolve(generateTokensForUser(user)),
+  ]);
+
+  saveRefreshTokenInBackground(user.id, tokens.refreshToken);
+
+  return { user, ...tokens };
 };
 
 // ═══════════════════════════════════════════
-// ✅ Login
+// ✅ Login — optimized
 // ═══════════════════════════════════════════
 export const loginUser = async (email, password) => {
   const user = await findUserByEmail(email);
   if (!user) throw new Error("Invalid credentials");
   if (!user.passwordHash)
     throw new Error("Password login not available for this account");
+
   const isMatch = await bcrypt.compare(password, user.passwordHash);
   if (!isMatch) throw new Error("Invalid credentials");
-  const accessToken = generateAccessToken(user);
-  const refreshToken = generateRefreshToken(user);
-  await saveRefreshToken({
-    userId: user.id,
-    token: refreshToken,
-    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-  });
-  return { user, accessToken, refreshToken };
+
+  const tokens = generateTokensForUser(user);
+  saveRefreshTokenInBackground(user.id, tokens.refreshToken);
+
+  return { user, ...tokens };
 };
 
 // ═══════════════════════════════════════════
-// ✅ Send OTP — DEV MODE (console only, no SMS)
+// ✅ Send OTP — DEV MODE (fast)
 // ═══════════════════════════════════════════
 export const sendOtpService = async (phone) => {
   if (!phone) throw new Error("Phone number is required");
@@ -81,24 +121,25 @@ export const sendOtpService = async (phone) => {
 
   otpStore.set(cleanPhone, {
     otp,
-    expiresAt: Date.now() + 5 * 60 * 1000,
+    expiresAt: Date.now() + OTP_TTL_MS,
     attempts: 0,
   });
 
-  // 🔑 OTP console pe print — testing ke liye
-  console.log("");
-  console.log("═══════════════════════════════════════");
-  console.log("📱 Phone:", cleanPhone);
-  console.log("🔑 OTP CODE:", otp);
-  console.log("⏰ Expires in: 5 minutes");
-  console.log("═══════════════════════════════════════");
-  console.log("");
+  setImmediate(() => {
+    console.log("");
+    console.log("═══════════════════════════════════════");
+    console.log("📱 Phone:", cleanPhone);
+    console.log("🔑 OTP CODE:", otp);
+    console.log("⏰ Expires in: 5 minutes");
+    console.log("═══════════════════════════════════════");
+    console.log("");
+  });
 
   return { phone: cleanPhone };
 };
 
 // ═══════════════════════════════════════════
-// ✅ Verify OTP — DEV MODE
+// ✅ Verify OTP — DEV MODE (optimized)
 // ═══════════════════════════════════════════
 export const verifyOtpService = async (phone, otp) => {
   if (!phone) throw new Error("Phone number is required");
@@ -110,28 +151,23 @@ export const verifyOtpService = async (phone, otp) => {
   const record = otpStore.get(cleanPhone);
   if (!record) throw new Error("OTP not found. Please request new OTP.");
 
-  // Expiry check
   if (Date.now() > record.expiresAt) {
     otpStore.delete(cleanPhone);
     throw new Error("OTP expired. Please request new OTP.");
   }
 
-  // Attempts check
   record.attempts = (record.attempts || 0) + 1;
   if (record.attempts > 5) {
     otpStore.delete(cleanPhone);
     throw new Error("Too many attempts. Request new OTP.");
   }
 
-  // Verify
-  if (record.otp !== cleanOtp) {
-    throw new Error("Invalid OTP");
-  }
+  if (record.otp !== cleanOtp) throw new Error("Invalid OTP");
 
   otpStore.delete(cleanPhone);
 
-  // User dhundo ya banao
   let user = await findUserByPhone(cleanPhone);
+
   if (!user) {
     user = await createUser({
       firstName: "User",
@@ -145,51 +181,52 @@ export const verifyOtpService = async (phone, otp) => {
       accountStatus: "ACTIVE",
       phoneVerifiedAt: new Date(),
     });
-    await createWallet(user.id);
+
+    createWallet(user.id).catch((err) =>
+      console.error("Wallet create error:", err.message)
+    );
+
     console.log("✅ New user created via OTP:", user.id);
   } else {
     console.log("✅ Existing user logged in via OTP:", user.id);
   }
 
-  const accessToken = generateAccessToken(user);
-  const refreshToken = generateRefreshToken(user);
+  const tokens = generateTokensForUser(user);
+  saveRefreshTokenInBackground(user.id, tokens.refreshToken);
 
-  await saveRefreshToken({
-    userId: user.id,
-    token: refreshToken,
-    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-  });
-
-  return { user, accessToken, refreshToken };
+  return { user, ...tokens };
 };
 
 // ═══════════════════════════════════════════
-// 🔥 Firebase Phone Auth — Production
+// 🔥 Firebase Phone Auth — MAXIMUM OPTIMIZED
 // ═══════════════════════════════════════════
 export const verifyFirebaseTokenService = async (idToken) => {
   if (!idToken) throw new Error("ID token is required");
 
+  // ── Step 1: Verify token ──
   let decoded;
   try {
-    decoded = await admin.auth().verifyIdToken(idToken);
+    decoded = await getFirebaseAuth().verifyIdToken(idToken);
   } catch (error) {
     console.error("❌ Firebase verify error:", error.message);
     throw new Error("Invalid or expired Firebase token");
   }
 
   const phone = decoded.phone_number;
-  const firebaseUid = decoded.uid;
-
   if (!phone) throw new Error("Phone number not found in Firebase token");
 
+  // ── Step 2: Find user ──
   let user = await findUserByPhone(phone);
 
+  // ═══════════════════════════════════════════
+  // NEW USER PATH
+  // ═══════════════════════════════════════════
   if (!user) {
     user = await createUser({
       firstName: "User",
       lastName: null,
       email: `${phone.replace("+", "")}@localguider.com`,
-      phone: phone,
+      phone,
       passwordHash: null,
       role: "USER",
       isVerified: true,
@@ -197,33 +234,50 @@ export const verifyFirebaseTokenService = async (idToken) => {
       accountStatus: "ACTIVE",
       phoneVerifiedAt: new Date(),
     });
-    await createWallet(user.id);
-    console.log("✅ New user created via Firebase:", user.id);
-  } else {
-    console.log("✅ Existing user logged in via Firebase:", user.id);
+
+    // ⚡ Background wallet create
+    createWallet(user.id).catch((err) =>
+      console.error("Wallet create error:", err.message)
+    );
+
+    const tokens = generateTokensForUser(user);
+    saveRefreshTokenInBackground(user.id, tokens.refreshToken);
+
+    setImmediate(() =>
+      console.log("✅ New user created via Firebase:", user.id)
+    );
+
+    return { user, ...tokens };
   }
 
-  const accessToken = generateAccessToken(user);
-  const refreshToken = generateRefreshToken(user);
+  // ═══════════════════════════════════════════
+  // EXISTING USER PATH
+  // ═══════════════════════════════════════════
+  const tokens = generateTokensForUser(user);
+  saveRefreshTokenInBackground(user.id, tokens.refreshToken);
 
-  await saveRefreshToken({
-    userId: user.id,
-    token: refreshToken,
-    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-  });
+  setImmediate(() =>
+    console.log("✅ Existing user logged in via Firebase:", user.id)
+  );
 
-  return { user, accessToken, refreshToken };
+  return { user, ...tokens };
 };
 
 // ═══════════════════════════════════════════
-// ✅ Refresh Token
+// ✅ Refresh Token — optimized
 // ═══════════════════════════════════════════
 export const refreshUserToken = async (refreshToken) => {
-  const storedToken = await getRefreshToken(refreshToken);
+  // ⚡ Parallel: DB check + JWT verify
+  const [storedToken, decoded] = await Promise.all([
+    getRefreshToken(refreshToken),
+    Promise.resolve(verifyRefreshToken(refreshToken)),
+  ]);
+
   if (!storedToken) throw new Error("Invalid refresh token");
-  const decoded = verifyRefreshToken(refreshToken);
+
   const user = await findUserById(decoded.id);
   if (!user) throw new Error("User not found");
+
   const accessToken = generateAccessToken(user);
   return { accessToken };
 };
@@ -238,12 +292,19 @@ export const logoutUser = async (refreshToken) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Google Login
+// ✅ Google Login — optimized
 // ═══════════════════════════════════════════
 export const googleLoginService = async (payload) => {
   const { googleId, email, firstName, lastName, profileImage } = payload;
-  let user = await findUserByGoogleId(googleId);
-  if (!user) user = await findUserByEmail(email);
+
+  // ⚡ Parallel lookups
+  const [userByGoogle, userByEmail] = await Promise.all([
+    findUserByGoogleId(googleId),
+    findUserByEmail(email),
+  ]);
+
+  let user = userByGoogle || userByEmail;
+
   if (!user) {
     user = await createUser({
       firstName,
@@ -258,54 +319,67 @@ export const googleLoginService = async (payload) => {
       isVerified: true,
       accountStatus: "ACTIVE",
     });
-    await createWallet(user.id);
+
+    createWallet(user.id).catch((err) =>
+      console.error("Wallet create error:", err.message)
+    );
   }
-  const accessToken = generateAccessToken(user);
-  const refreshToken = generateRefreshToken(user);
-  await saveRefreshToken({
-    userId: user.id,
-    token: refreshToken,
-    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-  });
-  return { user, accessToken, refreshToken };
+
+  const tokens = generateTokensForUser(user);
+  saveRefreshTokenInBackground(user.id, tokens.refreshToken);
+
+  return { user, ...tokens };
 };
 
 // ═══════════════════════════════════════════
-// ✅ Forgot Password
+// ✅ Forgot Password — optimized (email background)
 // ═══════════════════════════════════════════
 export const forgotPasswordService = async (email) => {
   const user = await findUserByEmail(email);
   if (!user) throw new Error("User not found");
+
   const resetToken = crypto.randomBytes(32).toString("hex");
   const tokenHash = crypto
     .createHash("sha256")
     .update(resetToken)
     .digest("hex");
+
   await user.update({
     resetTokenHash: tokenHash,
     resetTokenExpires: new Date(Date.now() + 15 * 60 * 1000),
   });
+
   const resetUrl = `${env.API_BASE_URL}/api/v1/auth/reset-password/${resetToken}`;
-  await sendEmail({
+
+  // ⚡ Email in background (doesn't block response)
+  sendEmail({
     to: email,
     subject: "Password Reset",
     html: `<p>Click the link to reset your password:</p><a href="${resetUrl}">Reset Password</a>`,
-  });
+  }).catch((err) => console.error("Email send failed:", err.message));
+
   return { message: "Password reset email sent" };
 };
 
 // ═══════════════════════════════════════════
-// ✅ Reset Password
+// ✅ Reset Password — optimized
 // ═══════════════════════════════════════════
 export const resetPasswordService = async (token, newPassword) => {
   const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-  const user = await findUserByResetToken(tokenHash);
+
+  // ⚡ Parallel: lookup + hash
+  const [user, hashedPassword] = await Promise.all([
+    findUserByResetToken(tokenHash),
+    bcrypt.hash(newPassword, BCRYPT_ROUNDS),
+  ]);
+
   if (!user) throw new Error("Invalid or expired token");
-  const hashedPassword = await bcrypt.hash(newPassword, 10);
+
   await user.update({
     passwordHash: hashedPassword,
     resetTokenHash: null,
     resetTokenExpires: null,
   });
+
   return { message: "Password reset successful" };
 };

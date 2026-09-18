@@ -1,3 +1,4 @@
+// src/modules/places/place.repository.js
 import { Op } from "sequelize";
 import Place from "../../database/models/core/Place.js";
 
@@ -53,4 +54,33 @@ export const deletePlaceById = async (id) => {
   if (!place) return null;
   await place.destroy();
   return true;
+};
+
+// ═══════════════════════════════════════════
+// ✅ GALLERY functions
+// ═══════════════════════════════════════════
+export const addGalleryImage = async (placeId, imageUrl) => {
+  const place = await Place.findByPk(placeId);
+  if (!place) return null;
+  const gallery = Array.isArray(place.gallery) ? place.gallery : [];
+  gallery.push(imageUrl);
+  await place.update({ gallery });
+  return place;
+};
+
+export const removeGalleryImage = async (placeId, imageUrl) => {
+  const place = await Place.findByPk(placeId);
+  if (!place) return null;
+  const gallery = (Array.isArray(place.gallery) ? place.gallery : []).filter(
+    (url) => url !== imageUrl
+  );
+  await place.update({ gallery });
+  return place;
+};
+
+export const replaceGallery = async (placeId, images) => {
+  const place = await Place.findByPk(placeId);
+  if (!place) return null;
+  await place.update({ gallery: images });
+  return place;
 };

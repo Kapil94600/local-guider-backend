@@ -1,3 +1,4 @@
+// src/modules/places/place.service.js
 import {
   createPlace,
   getAllPlaces,
@@ -6,6 +7,10 @@ import {
   searchPlaces,
   updatePlaceById,
   deletePlaceById,
+  // ✅ Gallery
+  addGalleryImage,
+  removeGalleryImage,
+  replaceGallery,
 } from "./place.repository.js";
 
 export const addPlace = async (payload) => {
@@ -40,4 +45,25 @@ export const removePlace = async (id) => {
   const result = await deletePlaceById(id);
   if (!result) throw new Error("Place not found");
   return { message: "Place deleted successfully" };
+};
+
+// ═══════════════════════════════════════════
+// ✅ GALLERY service
+// ═══════════════════════════════════════════
+export const addGallery = async (placeId, imageUrl) => {
+  const place = await addGalleryImage(placeId, imageUrl);
+  if (!place) throw new Error("Place not found");
+  return place;
+};
+
+export const removeGallery = async (placeId, imageUrl) => {
+  const place = await removeGalleryImage(placeId, imageUrl);
+  if (!place) throw new Error("Place not found");
+  return place;
+};
+
+export const updateGallery = async (placeId, images) => {
+  const place = await replaceGallery(placeId, images);
+  if (!place) throw new Error("Place not found");
+  return place;
 };

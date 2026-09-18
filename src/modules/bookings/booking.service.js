@@ -19,7 +19,9 @@ import { generateOtp } from "../../utils/otp.js";
 import { ApiError } from "../../utils/apiError.js";
 import { addNotification } from "../notifications/notification.service.js";
 
-// ✅ Helper: Check booking conflict for a provider
+// ═══════════════════════════════════════════════════════════════
+// HELPER: Booking conflict check
+// ═══════════════════════════════════════════════════════════════
 const checkBookingConflict = async (providerId, providerType, newStart, durationMinutes) => {
   let planIds = [];
   if (providerType === "GUIDER") {
@@ -70,6 +72,29 @@ const checkBookingConflict = async (providerId, providerType, newStart, duration
   return null;
 };
 
+// ═══════════════════════════════════════════════════════════════
+// HELPER: Resolve provider user from booking
+// ═══════════════════════════════════════════════════════════════
+const resolveProviderUser = async (booking) => {
+  if (booking.guiderPlanId) {
+    const plan = await GuiderPlan.findByPk(booking.guiderPlanId);
+    if (plan) {
+      const guider = await Guider.findByPk(plan.guiderId);
+      if (guider) return await User.findByPk(guider.userId);
+    }
+  } else if (booking.photographerPlanId) {
+    const plan = await PhotographerPlan.findByPk(booking.photographerPlanId);
+    if (plan) {
+      const photographer = await Photographer.findByPk(plan.photographerId);
+      if (photographer) return await User.findByPk(photographer.userId);
+    }
+  }
+  return null;
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ADD BOOKING
+// ═══════════════════════════════════════════════════════════════
 export const addBooking = async (userId, payload) => {
   let totalAmount = 0;
   let providerId = null;
@@ -125,110 +150,152 @@ export const fetchBooking = async (id) => {
 };
 
 export const fetchMyBookings = async (userId) => getBookingsByUserId(userId);
-
 export const fetchGuiderBookings = async (guiderId) => getBookingsByGuiderId(guiderId);
-
 export const fetchPhotographerBookings = async (photographerId) => getBookingsByPhotographerId(photographerId);
 
-// ✅ changeBookingStatus with correct addNotification signature
-export const changeBookingStatus = async (id, status, notes = null) => {
+// ═══════════════════════════════════════════════════════════════
+// ✅ FIX #3 + #5: CHANGE BOOKING STATUS
+//   - initiatorId: jis user ne action liya — usko notify nahi karenge
+//   - CANCELLED / REJECTED pe OTP fields clear karenge (fix #3)
+//   - Notification message me OTP / sensitive data nahi jaayega
+// ═══════════════════════════════════════════════════════════════
+export const changeBookingStatus = async (
+  id,
+  status,
+  notes = null,
+  initiatorId = null   // ✅ NEW: skip notifying the actor
+) => {
   const allowed = ["PENDING", "APPROVED", "REJECTED", "COMPLETED", "CANCELLED"];
   if (!allowed.includes(status)) throw new ApiError(400, "Invalid status");
 
   const booking = await getBookingById(id);
   if (!booking) throw new ApiError(404, "Booking not found");
 
+  // ── Build update payload ──
   const updatePayload = { status };
+
   if ((status === "REJECTED" || status === "CANCELLED") && notes) {
     updatePayload.notes = notes;
   }
+
+  // ✅ FIX #3: OTP fields clear karo jab booking close ho rahi
+  if (status === "CANCELLED" || status === "REJECTED") {
+    updatePayload.completionOtp = null;
+    updatePayload.completionOtpExpiresAt = null;
+    updatePayload.completionOtpVerified = false;
+  }
+
   await booking.update(updatePayload);
   const updatedBooking = await getBookingById(id);
 
+  // ── Resolve parties ──
   const customer = await User.findByPk(booking.userId);
-  let providerUser = null;
-  if (booking.guiderPlanId) {
-    const plan = await GuiderPlan.findByPk(booking.guiderPlanId);
-    if (plan) {
-      const guider = await Guider.findByPk(plan.guiderId);
-      if (guider) providerUser = await User.findByPk(guider.userId);
-    }
-  } else if (booking.photographerPlanId) {
-    const plan = await PhotographerPlan.findByPk(booking.photographerPlanId);
-    if (plan) {
-      const photographer = await Photographer.findByPk(plan.photographerId);
-      if (photographer) providerUser = await User.findByPk(photographer.userId);
-    }
-  }
+  const providerUser = await resolveProviderUser(booking);
 
   const bookingIdShort = booking.id.slice(0, 8);
   const statusLower = status.toLowerCase();
 
-  // ✅ FIXED: object shape
-  if (customer) {
+  // ── Sanitize notes for notification (remove any OTP-like 6-digit codes) ──
+  const safeNotes = notes ? String(notes).replace(/\b\d{6}\b/g, "[hidden]") : null;
+
+  // ═══════════════════════════════════════════════════════════════
+  // NOTIFY CUSTOMER — skip if customer initiated the change
+  // ═══════════════════════════════════════════════════════════════
+  if (customer && customer.id !== initiatorId) {
     let title = `Booking ${statusLower}`;
     let message = `Your booking #${bookingIdShort} has been ${statusLower}.`;
-    if (notes) message += ` Reason: ${notes}`;
-    await addNotification({ userId: customer.id, title, message, type: "BOOKING" });
+    if (safeNotes) message += ` Reason: ${safeNotes}`;
+
+    await addNotification({
+      userId: customer.id,
+      title,
+      message,
+      type: "BOOKING",
+      data: { bookingId: booking.id, status }, // ✅ no OTP in data
+    });
   }
 
-  if (providerUser) {
+  // ═══════════════════════════════════════════════════════════════
+  // NOTIFY PROVIDER — skip if provider initiated the change
+  // ═══════════════════════════════════════════════════════════════
+  if (providerUser && providerUser.id !== initiatorId) {
     let title, message;
     if (status === "APPROVED") {
       title = "Booking Approved";
       message = `You approved booking #${bookingIdShort}.`;
     } else if (status === "REJECTED") {
       title = "Booking Rejected";
-      message = `You rejected booking #${bookingIdShort}. Reason: ${notes || "No reason"}`;
+      message = `You rejected booking #${bookingIdShort}. Reason: ${safeNotes || "No reason"}`;
     } else if (status === "CANCELLED") {
       title = "Booking Cancelled";
-      message = `Booking #${bookingIdShort} was cancelled. Reason: ${notes || "No reason"}`;
+      message = `Booking #${bookingIdShort} was cancelled. Reason: ${safeNotes || "No reason"}`;
     } else {
       title = `Booking ${statusLower}`;
       message = `Booking #${bookingIdShort} status changed to ${statusLower}.`;
     }
-    await addNotification({ userId: providerUser.id, title, message, type: "BOOKING" });
+
+    await addNotification({
+      userId: providerUser.id,
+      title,
+      message,
+      type: "BOOKING",
+      data: { bookingId: booking.id, status }, // ✅ no OTP in data
+    });
   }
 
   return updatedBooking;
 };
 
+// ═══════════════════════════════════════════════════════════════
+// CANCEL MY BOOKING
+//   ✅ FIX #5: initiatorId pass karo taaki khud ko notification na jaaye
+// ═══════════════════════════════════════════════════════════════
 export const cancelMyBooking = async (userId, bookingId, reason = null) => {
   const booking = await getBookingById(bookingId);
   if (!booking) throw new ApiError(404, "Booking not found");
 
   let isAuthorized = false;
+  let initiatorRole = "USER";
+
   if (booking.userId === userId) {
     isAuthorized = true;
+    initiatorRole = "CUSTOMER";
   } else {
     if (booking.guiderPlanId) {
       const plan = await GuiderPlan.findByPk(booking.guiderPlanId);
       if (plan) {
         const guider = await Guider.findByPk(plan.guiderId);
-        if (guider && guider.userId === userId) isAuthorized = true;
+        if (guider && guider.userId === userId) {
+          isAuthorized = true;
+          initiatorRole = "PROVIDER";
+        }
       }
     } else if (booking.photographerPlanId) {
       const plan = await PhotographerPlan.findByPk(booking.photographerPlanId);
       if (plan) {
         const photographer = await Photographer.findByPk(plan.photographerId);
-        if (photographer && photographer.userId === userId) isAuthorized = true;
+        if (photographer && photographer.userId === userId) {
+          isAuthorized = true;
+          initiatorRole = "PROVIDER";
+        }
       }
     }
   }
 
   if (!isAuthorized) throw new ApiError(403, "Not allowed");
 
-  if (booking.status === "COMPLETED" || booking.status === "CANCELLED")
+  if (booking.status === "COMPLETED" || booking.status === "CANCELLED") {
     throw new ApiError(400, "Cannot cancel now");
+  }
 
-  return await changeBookingStatus(bookingId, "CANCELLED", reason);
+  // ✅ initiatorId pass karo — khud ko notification nahi jaayegi
+  return await changeBookingStatus(bookingId, "CANCELLED", reason, userId);
 };
 
-// src/modules/bookings/booking.service.js
-
-// ... (imports same)
-
-// ✅ UPDATED: OTP console me print + SMS + notification me OTP include
+// ═══════════════════════════════════════════════════════════════
+// REQUEST COMPLETION (generates OTP)
+//   ✅ FIX #3: OTP kabhi bhi provider ke notification me nahi jaayega
+// ═══════════════════════════════════════════════════════════════
 export const requestCompletion = async (providerId, bookingId, role) => {
   const booking = await getBookingById(bookingId);
   if (!booking) throw new ApiError(404, "Booking not found");
@@ -238,7 +305,7 @@ export const requestCompletion = async (providerId, bookingId, role) => {
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
   const updated = await saveCompletionOtp(bookingId, otp, expiresAt);
 
-  // ✅ LOG OTP — for testing/debugging
+  // ✅ LOG OTP — for testing/debugging only
   console.log("═══════════════════════════════════════");
   console.log("🔑 COMPLETION OTP GENERATED");
   console.log("   Booking ID:", bookingId);
@@ -249,8 +316,10 @@ export const requestCompletion = async (providerId, bookingId, role) => {
   console.log("═══════════════════════════════════════");
 
   const customer = await User.findByPk(booking.userId);
+
+  // ✅ OTP SIRF CUSTOMER ko jaayega — provider ko nahi
   if (customer) {
-    // ✅ Send OTP via SMS to customer (console me fallback)
+    // SMS (console fallback)
     if (customer.phone) {
       try {
         const { sendSms } = await import("../../utils/smsService.js");
@@ -264,19 +333,34 @@ export const requestCompletion = async (providerId, bookingId, role) => {
       }
     }
 
-    // ✅ In-app notification (with OTP in message for testing)
+    // ✅ In-app notification to CUSTOMER ONLY
     await addNotification({
       userId: customer.id,
       title: "Completion OTP Requested",
       message: `Your booking #${booking.id.slice(0, 8)} is being completed. Your OTP is: ${otp}. Please share it with your provider.`,
       type: "BOOKING",
-      data: { bookingId: booking.id, otp },   // ✅ OTP in data for app to display
+      data: { bookingId: booking.id, otp }, // ✅ OTP only in customer's data
+    });
+  }
+
+  // ✅ FIX #3: Provider ko sirf "OTP requested" notification jaayegi — OTP value NAHI
+  const providerUser = await User.findByPk(providerId);
+  if (providerUser) {
+    await addNotification({
+      userId: providerUser.id,
+      title: "Completion OTP Sent",
+      message: `OTP has been sent to the customer for booking #${booking.id.slice(0, 8)}. Ask them to share it.`,
+      type: "BOOKING",
+      data: { bookingId: booking.id }, // ✅ NO OTP
     });
   }
 
   return updated;
 };
 
+// ═══════════════════════════════════════════════════════════════
+// VERIFY COMPLETION
+// ═══════════════════════════════════════════════════════════════
 export const verifyCompletion = async (userId, bookingId, otp) => {
   const booking = await getBookingById(bookingId);
   if (!booking) throw new ApiError(404, "Booking not found");
@@ -301,15 +385,15 @@ export const verifyCompletion = async (userId, bookingId, otp) => {
     throw new ApiError(403, "Only the provider can verify the OTP");
   }
 
-  if (booking.completionOtp !== otp || booking.completionOtpExpiresAt < new Date())
+  if (booking.completionOtp !== otp || booking.completionOtpExpiresAt < new Date()) {
     throw new ApiError(400, "Invalid or expired OTP");
+  }
 
   const updated = await updateBookingStatus(bookingId, "COMPLETED");
   await booking.update({ completionOtpVerified: true });
 
   const customer = await User.findByPk(booking.userId);
   if (customer) {
-    // ✅ FIXED: object shape
     await addNotification({
       userId: customer.id,
       title: "Booking Completed",
@@ -317,9 +401,9 @@ export const verifyCompletion = async (userId, bookingId, otp) => {
       type: "BOOKING",
     });
   }
+
   const providerUser = await User.findByPk(userId);
   if (providerUser) {
-    // ✅ FIXED: object shape
     await addNotification({
       userId: providerUser.id,
       title: "Booking Completed",

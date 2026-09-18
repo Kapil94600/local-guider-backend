@@ -7,7 +7,7 @@ import Review from "../../database/models/core/Review.js";
 import Favorite from "../../database/models/core/Favorite.js";
 import Wallet from "../../database/models/core/Wallet.js";
 import WalletTransaction from "../../database/models/core/WalletTransaction.js";
-import RoleRequest from "../../database/models/core/RoleRequest.js"; // ✅ Added missing import
+import RoleRequest from "../../database/models/core/RoleRequest.js";
 
 export const getDashboardStats = async () => {
   const users = await User.count();
@@ -17,14 +17,20 @@ export const getDashboardStats = async () => {
   const bookings = await Booking.count();
   const reviews = await Review.count();
   const favorites = await Favorite.count();
-  const roleRequests = await RoleRequest.count(); // ✅ Now works
+
+  // ✅ FIX #4: sirf PENDING role requests count karo
+  const pendingRoleRequests = await RoleRequest.count({
+    where: { status: "PENDING" },
+  });
 
   // Wallet balance total
   const wallets = await Wallet.findAll();
   const walletBalance = wallets.reduce((sum, w) => sum + Number(w.balance || 0), 0);
 
-  // Total revenue from WalletTransactions (optional)
-  const transactions = await WalletTransaction.findAll();
+  // Total revenue from WalletTransactions (CREDIT only)
+  const transactions = await WalletTransaction.findAll({
+    where: { transactionType: "CREDIT" },
+  });
   const totalRevenue = transactions.reduce((sum, t) => sum + Number(t.amount || 0), 0);
 
   return {
@@ -36,12 +42,11 @@ export const getDashboardStats = async () => {
     totalReviews: reviews,
     totalFavorites: favorites,
     totalRevenue: totalRevenue || walletBalance,
-    pendingRoleRequests: roleRequests,
-    totalSliders: 0,  // Add Slider.count() if slider model exists
-    totalOffers: 0,   // Add Offer.count() if offer model exists
-    totalIdCards: 0,  // Add IdCard.count() if id card model exists
-    // Add more fields as needed for charts
-    userGrowth: [],   // You can populate from real data later
+    pendingRoleRequests,   // ✅ ab sirf pending count
+    totalSliders: 0,
+    totalOffers: 0,
+    totalIdCards: 0,
+    userGrowth: [],
     bookingTrend: [],
     revenueByCategory: [],
     recentUsers: [],

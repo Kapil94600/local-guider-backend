@@ -65,7 +65,13 @@ export const getPhotographerBookings = async (req, res, next) => {
 export const updateStatus = async (req, res, next) => {
   try {
     const { status, notes } = req.body;
-    const booking = await changeBookingStatus(req.params.id, status, notes);
+    // ✅ FIX #5: initiatorId pass karo taaki khud ko notification na jaaye
+    const booking = await changeBookingStatus(
+      req.params.id,
+      status,
+      notes,
+      req.user.id   // ✅ ADD THIS
+    );
     return ApiResponse.success(res, "Status updated", booking);
   } catch (error) { next(error); }
 };

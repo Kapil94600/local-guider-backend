@@ -19,6 +19,8 @@ if (!admin.apps.length) {
   try {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
+      // ⚡ Connection reuse
+      httpAgent: undefined,
     });
     console.log("✅ Firebase Admin configured");
   } catch (error) {

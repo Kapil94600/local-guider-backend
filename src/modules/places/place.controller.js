@@ -1,3 +1,4 @@
+// src/modules/places/place.controller.js
 import { ApiResponse } from "../../utils/apiResponse.js";
 import {
   addPlace,
@@ -7,6 +8,10 @@ import {
   searchPlacesService,
   updatePlace,
   removePlace,
+  // ✅ Gallery
+  addGallery,
+  removeGallery,
+  updateGallery,
 } from "./place.service.js";
 
 export const createPlace = async (req, res, next) => {
@@ -69,6 +74,45 @@ export const deletePlace = async (req, res, next) => {
   try {
     const result = await removePlace(req.params.id);
     return ApiResponse.success(res, result.message, null);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ═══════════════════════════════════════════
+// ✅ GALLERY controllers
+// ═══════════════════════════════════════════
+export const addPlaceGalleryImage = async (req, res, next) => {
+  try {
+    const { imageUrl } = req.body;
+    if (!imageUrl) {
+      return res.status(400).json({ success: false, message: "imageUrl is required" });
+    }
+    const place = await addGallery(req.params.id, imageUrl);
+    return ApiResponse.success(res, "Image added to gallery", place);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const removePlaceGalleryImage = async (req, res, next) => {
+  try {
+    const { imageUrl } = req.body;
+    const place = await removeGallery(req.params.id, imageUrl);
+    return ApiResponse.success(res, "Image removed from gallery", place);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const replacePlaceGallery = async (req, res, next) => {
+  try {
+    const { images } = req.body;
+    if (!Array.isArray(images)) {
+      return res.status(400).json({ success: false, message: "images must be an array" });
+    }
+    const place = await updateGallery(req.params.id, images);
+    return ApiResponse.success(res, "Gallery updated", place);
   } catch (error) {
     next(error);
   }
