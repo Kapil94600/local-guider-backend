@@ -13,6 +13,9 @@ import { apiLimiter } from "./middlewares/rateLimiter.js";
 
 const app = express();
 
+// ✅ FIX: Render/Vercel/Heroku behind proxy — rate limiter + real IP detection
+app.set("trust proxy", 1);
+
 app.disable("etag");
 app.use((req, res, next) => {
   res.set("Cache-Control", "no-store");

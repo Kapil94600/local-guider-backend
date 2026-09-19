@@ -1,3 +1,6 @@
+// ═══════════════════════════════════════════════════════════════
+// src/database/models/core/associations.js
+// ═══════════════════════════════════════════════════════════════
 import User from "./User.js";
 import Wallet from "./Wallet.js";
 import WalletTransaction from "./WalletTransaction.js";
@@ -43,7 +46,8 @@ export const setupAssociations = () => {
   Notification.belongsTo(User, { foreignKey: "userId", as: "user" });
 
   User.hasMany(RoleRequest, { foreignKey: "userId" });
-  RoleRequest.belongsTo(User, { foreignKey: "userId" });
+  // ✅ FIX: alias "user" added — admin controller `as: "user"` use karta hai
+  RoleRequest.belongsTo(User, { foreignKey: "userId", as: "user" });
 
   User.hasMany(Favorite, { foreignKey: "userId" });
   Favorite.belongsTo(User, { foreignKey: "userId" });
