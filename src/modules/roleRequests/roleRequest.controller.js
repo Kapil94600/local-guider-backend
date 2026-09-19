@@ -9,7 +9,8 @@ import {
 } from "./roleRequest.service.js";
 import User from "../../database/models/core/User.js";
 import { uploadToCloudinary } from "../../utils/cloudinaryUpload.js";
-
+import jwt from "jsonwebtoken";
+import { env } from "../../config/env.js";
 // ═══════════════════════════════════════════
 // CREATE ROLE REQUEST — Cloudinary upload
 // ═══════════════════════════════════════════
@@ -187,23 +188,34 @@ export const updateRoleRequest = async (req, res, next) => {
       adminMessage
     );
 
-    // ✅ Emit real-time role update to the user
+    // ✅ Emit real-time role update with fresh access token
     if (status === "APPROVED" && request) {
       try {
         const user = await User.findByPk(request.userId);
         const io = req.app.get("io");
 
         if (io && user) {
+          // Generate fresh access token with NEW role
+          const freshAccessToken = jwt.sign(
+            {
+              id: user.id,
+              role: user.role,
+              email: user.email,
+            },
+            env.JWT_ACCESS_SECRET,
+            { expiresIn: env.JWT_ACCESS_EXPIRES || "1d" }
+          );
+
           io.to(`user:${user.id}`).emit("role:updated", {
             userId: user.id,
             newRole: user.role,
             user: user.toJSON(),
+            accessToken: freshAccessToken,
           });
+
           console.log(
             `📡 role:updated emitted → user:${user.id} (${user.role})`
           );
-        } else {
-          console.log("⚠️ Socket emit skipped — io or user missing");
         }
       } catch (socketErr) {
         console.error("❌ Socket emit failed:", socketErr.message);

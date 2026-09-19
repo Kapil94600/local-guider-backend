@@ -1,5 +1,6 @@
 // src/modules/roleRequests/roleRequest.service.js
 import { sequelize } from "../../config/database.js";
+
 import {
   createRoleRequest,
   getRoleRequests,
@@ -34,6 +35,9 @@ const getPlaceNames = async (placeIds) => {
   }
 };
 
+// ═══════════════════════════════════════════
+// CREATE ROLE REQUEST
+// ═══════════════════════════════════════════
 export const addRoleRequest = async (userId, requestedRole, details) => {
   if (!["GUIDER", "PHOTOGRAPHER"].includes(requestedRole)) {
     throw new Error("Invalid requested role");
@@ -68,6 +72,9 @@ export const addRoleRequest = async (userId, requestedRole, details) => {
   });
 };
 
+// ═══════════════════════════════════════════
+// FETCH
+// ═══════════════════════════════════════════
 export const fetchRoleRequests = async () => getRoleRequests();
 export const fetchMyRoleRequests = async (userId) =>
   getUserRoleRequests(userId);
@@ -78,9 +85,13 @@ export const fetchRoleRequest = async (id) => {
   return request;
 };
 
-// ═══════════════════════════════════════════════════════════════
-// ✅ FIXED: processRoleRequest — with transaction + fresh fetch + logs
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════
+// ✅ FIXED: processRoleRequest
+//   - Uses transaction
+//   - Direct User.update() to bypass hooks
+//   - Verifies role actually changed
+//   - Detailed console logs
+// ═══════════════════════════════════════════
 export const processRoleRequest = async (id, status, adminMessage) => {
   if (!["APPROVED", "REJECTED"].includes(status)) {
     throw new Error("Invalid request status");
@@ -92,6 +103,7 @@ export const processRoleRequest = async (id, status, adminMessage) => {
     throw new Error("This request has already been processed");
   }
 
+  // If REJECTED, just update status
   if (status === "REJECTED") {
     return await updateRoleRequest(id, {
       status,
@@ -99,40 +111,40 @@ export const processRoleRequest = async (id, status, adminMessage) => {
     });
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // APPROVED — Transaction me sab kuch atomically karo
-  // ═══════════════════════════════════════════════════════════════
-  const transaction = await sequelize.transaction();
+  // ═══════════════════════════════════════════
+  // APPROVED — Transaction
+  // ═══════════════════════════════════════════
+  const t = await sequelize.transaction();
 
   try {
-    // 1. Fresh user fetch
-    const user = await User.findByPk(request.userId, { transaction });
+    const user = await User.findByPk(request.userId, { transaction: t });
     if (!user) throw new Error("User not found");
 
-    console.log(`🔵 Processing approval for user ${user.id} (${user.email})`);
-    console.log(`   Current role: ${user.role}`);
+    console.log(`🔵 [processRoleRequest] Approving request ${id}`);
+    console.log(`   User: ${user.email}`);
+    console.log(`   Old role: ${user.role}`);
     console.log(`   New role: ${request.requestedRole}`);
 
-    // 2. Update user role — DIRECT UPDATE to bypass any hooks/validation
+    // 1. Update user role — DIRECT UPDATE (bypasses any hooks)
     await User.update(
       { role: request.requestedRole },
-      { where: { id: user.id }, transaction }
+      { where: { id: user.id }, transaction: t }
     );
 
-    // Verify
-    const updatedUser = await User.findByPk(user.id, { transaction });
-    console.log(`✅ User role updated in DB: ${updatedUser.role}`);
+    // Verify the update actually worked
+    const verifyUser = await User.findByPk(user.id, { transaction: t });
+    console.log(`✅ Role updated in DB: ${verifyUser.role}`);
 
-    if (updatedUser.role !== request.requestedRole) {
+    if (verifyUser.role !== request.requestedRole) {
       throw new Error(
-        `Role update failed. Expected ${request.requestedRole}, got ${updatedUser.role}`
+        `Role update failed — expected ${request.requestedRole}, got ${verifyUser.role}`
       );
     }
 
-    // 3. Common profile data
+    // 2. Build profile data
     const profileData = {
       userId: user.id,
-      fullName: request.fullName || updatedUser.firstName,
+      fullName: request.fullName || verifyUser.firstName,
       companyName: request.companyName || null,
       location: request.location || null,
       selfieUrl: request.selfieUrl || null,
@@ -149,27 +161,27 @@ export const processRoleRequest = async (id, status, adminMessage) => {
 
     const placeNames = await getPlaceNames(profileData.placeIds);
 
-    // 4. Create/Update Guider or Photographer
+    // 3. Create/Update Guider or Photographer profile
     if (request.requestedRole === "GUIDER") {
       const existing = await Guider.findOne({
         where: { userId: user.id },
-        transaction,
+        transaction: t,
       });
       if (existing) {
-        await existing.update(profileData, { transaction });
-        console.log(`✅ Guider profile updated for ${user.id}`);
+        await existing.update(profileData, { transaction: t });
+        console.log(`✅ Guider profile updated`);
       } else {
         await Guider.create(
           { ...profileData, languages: [] },
-          { transaction }
+          { transaction: t }
         );
-        console.log(`✅ Guider profile created for ${user.id}`);
+        console.log(`✅ Guider profile created`);
       }
 
-      // 5. ID Card
+      // ID Card
       const existingCard = await IdCard.findOne({
         where: { userId: user.id, role: "GUIDER" },
-        transaction,
+        transaction: t,
       });
       if (!existingCard) {
         await IdCard.create(
@@ -189,39 +201,27 @@ export const processRoleRequest = async (id, status, adminMessage) => {
             ),
             status: "ACTIVE",
           },
-          { transaction }
+          { transaction: t }
         );
-        console.log(`✅ ID Card created for Guider: ${user.id}`);
-      } else {
-        await existingCard.update(
-          {
-            fullName: profileData.fullName,
-            companyName: profileData.companyName,
-            location: profileData.location,
-            placeIds: profileData.placeIds,
-            placeNames,
-            profileImage: profileData.profilePhotoUrl,
-          },
-          { transaction }
-        );
-        console.log(`✅ ID Card updated for Guider: ${user.id}`);
+        console.log(`✅ IdCard created for Guider`);
       }
     } else if (request.requestedRole === "PHOTOGRAPHER") {
       const existing = await Photographer.findOne({
         where: { userId: user.id },
-        transaction,
+        transaction: t,
       });
       if (existing) {
-        await existing.update(profileData, { transaction });
-        console.log(`✅ Photographer profile updated for ${user.id}`);
+        await existing.update(profileData, { transaction: t });
+        console.log(`✅ Photographer profile updated`);
       } else {
-        await Photographer.create(profileData, { transaction });
-        console.log(`✅ Photographer profile created for ${user.id}`);
+        await Photographer.create(profileData, { transaction: t });
+        console.log(`✅ Photographer profile created`);
       }
 
+      // ID Card
       const existingCard = await IdCard.findOne({
         where: { userId: user.id, role: "PHOTOGRAPHER" },
-        transaction,
+        transaction: t,
       });
       if (!existingCard) {
         await IdCard.create(
@@ -241,41 +241,26 @@ export const processRoleRequest = async (id, status, adminMessage) => {
             ),
             status: "ACTIVE",
           },
-          { transaction }
+          { transaction: t }
         );
-        console.log(`✅ ID Card created for Photographer: ${user.id}`);
-      } else {
-        await existingCard.update(
-          {
-            fullName: profileData.fullName,
-            companyName: profileData.companyName,
-            location: profileData.location,
-            placeIds: profileData.placeIds,
-            placeNames,
-            profileImage: profileData.profilePhotoUrl,
-          },
-          { transaction }
-        );
-        console.log(`✅ ID Card updated for Photographer: ${user.id}`);
+        console.log(`✅ IdCard created for Photographer`);
       }
-    } else {
-      throw new Error("Unsupported role");
     }
 
-    // 6. Update role request status
+    // 4. Update role request status
     await updateRoleRequest(id, {
       status,
       adminMessage: adminMessage || null,
     });
 
-    // Commit
-    await transaction.commit();
-    console.log(`✅ Transaction committed for request ${id}`);
+    await t.commit();
+    console.log(`✅ [processRoleRequest] Transaction committed\n`);
 
+    // Return fresh request
     return await getRoleRequestById(id);
   } catch (error) {
-    await transaction.rollback();
-    console.error(`❌ processRoleRequest transaction failed:`, error.message);
+    await t.rollback();
+    console.error(`❌ [processRoleRequest] Rollback:`, error.message);
     throw error;
   }
 };
