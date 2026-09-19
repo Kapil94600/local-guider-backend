@@ -8,7 +8,7 @@ import {
   processRoleRequest,
 } from "./roleRequest.service.js";
 import User from "../../database/models/core/User.js";
-import { uploadToCloudinary } from "../../utils/cloudinaryUpload.js"; // ✅ NEW
+import { uploadToCloudinary } from "../../utils/cloudinaryUpload.js";
 
 // ═══════════════════════════════════════════
 // CREATE ROLE REQUEST — Cloudinary upload
@@ -16,7 +16,7 @@ import { uploadToCloudinary } from "../../utils/cloudinaryUpload.js"; // ✅ NEW
 export const createRoleRequest = async (req, res, next) => {
   try {
     const requestedRole = req.body.requestedRole || req.body.role;
-    const { message, fullName, companyName, location } = req.body;
+    const { message, fullName, companyName, location, idType } = req.body;
 
     // ── Validate role ──
     if (!requestedRole || !["GUIDER", "PHOTOGRAPHER"].includes(requestedRole)) {
@@ -32,6 +32,17 @@ export const createRoleRequest = async (req, res, next) => {
         message: "Full name aur location zaroori hai",
       });
     }
+
+    // ── Validate ID type ──
+    const allowedIdTypes = [
+      "AADHAAR",
+      "PAN",
+      "DRIVING_LICENSE",
+      "VOTER_ID",
+      "PASSPORT",
+      "OTHER",
+    ];
+    const cleanIdType = allowedIdTypes.includes(idType) ? idType : "AADHAAR";
 
     // ── Parse placeIds ──
     let placeIds = [];
@@ -76,23 +87,13 @@ export const createRoleRequest = async (req, res, next) => {
 
     // ═══════════════════════════════════════════
     // ⚡ Upload all 4 files to Cloudinary IN PARALLEL
-    // (memory buffers, no disk storage)
     // ═══════════════════════════════════════════
     console.log("📤 Uploading 4 files to Cloudinary...");
     const [selfieUrl, idFrontUrl, idBackUrl, profilePhotoUrl] =
       await Promise.all([
-        uploadToCloudinary(
-          files.selfie[0].buffer,
-          "local-guider/role-requests"
-        ),
-        uploadToCloudinary(
-          files.idFront[0].buffer,
-          "local-guider/role-requests"
-        ),
-        uploadToCloudinary(
-          files.idBack[0].buffer,
-          "local-guider/role-requests"
-        ),
+        uploadToCloudinary(files.selfie[0].buffer, "local-guider/role-requests"),
+        uploadToCloudinary(files.idFront[0].buffer, "local-guider/role-requests"),
+        uploadToCloudinary(files.idBack[0].buffer, "local-guider/role-requests"),
         uploadToCloudinary(
           files.profilePhoto[0].buffer,
           "local-guider/role-requests"
@@ -112,6 +113,7 @@ export const createRoleRequest = async (req, res, next) => {
       idFrontUrl,
       idBackUrl,
       profilePhotoUrl,
+      idType: cleanIdType, // ✅ NEW
     });
 
     return ApiResponse.success(
@@ -175,7 +177,6 @@ export const getRoleRequest = async (req, res, next) => {
 
 // ═══════════════════════════════════════════
 // UPDATE ROLE REQUEST STATUS (Admin)
-// Emits role:updated socket event on APPROVED
 // ═══════════════════════════════════════════
 export const updateRoleRequest = async (req, res, next) => {
   try {
@@ -206,7 +207,6 @@ export const updateRoleRequest = async (req, res, next) => {
         }
       } catch (socketErr) {
         console.error("❌ Socket emit failed:", socketErr.message);
-        // Don't fail the request if socket fails
       }
     }
 

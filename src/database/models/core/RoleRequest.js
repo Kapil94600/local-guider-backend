@@ -31,6 +31,20 @@ const RoleRequest = sequelize.define(
     idBackUrl: { type: DataTypes.STRING, allowNull: true },
     profilePhotoUrl: { type: DataTypes.STRING, allowNull: true },
     placeIds: { type: DataTypes.JSON, defaultValue: [] }, // max 3 place UUIDs
+
+    // ✅ NEW: Which ID is being submitted (Aadhaar / PAN / etc.)
+    idType: {
+      type: DataTypes.ENUM(
+        "AADHAAR",
+        "PAN",
+        "DRIVING_LICENSE",
+        "VOTER_ID",
+        "PASSPORT",
+        "OTHER"
+      ),
+      allowNull: true,
+      defaultValue: "AADHAAR",
+    },
   },
   { tableName: "role_requests", timestamps: true }
 );

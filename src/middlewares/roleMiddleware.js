@@ -13,7 +13,6 @@ const ALLOWED_ROLES = ["GUIDER", "PHOTOGRAPHER"];
 // ═══════════════════════════════════════════════════════════════
 // 1️⃣ validateRoleRequest
 //    User submit karta hai role request — sab checks pehle ho jaayen
-//    Attaches: req.validatedRoleRequest = { user, requestedRole }
 // ═══════════════════════════════════════════════════════════════
 export const validateRoleRequest = async (req, res, next) => {
   try {
@@ -113,13 +112,9 @@ export const validateRoleRequest = async (req, res, next) => {
       }
     }
 
-    // ── Phone must be verified (comment out if you want to allow unverified) ──
-    if (!user.phoneVerifiedAt) {
-      return res.status(403).json({
-        success: false,
-        message: "Please verify your phone number before requesting a role",
-      });
-    }
+    // ✅ Phone verification check REMOVED
+    // Mobile users ke liye ye unnecessary strict tha — Google login users
+    // ka phoneVerifiedAt null ho sakta hai. Let the request go through.
 
     // ── Profile shouldn't already exist ──
     const ProfileModel = requestedRole === "GUIDER" ? Guider : Photographer;
@@ -147,8 +142,6 @@ export const validateRoleRequest = async (req, res, next) => {
 
 // ═══════════════════════════════════════════════════════════════
 // 2️⃣ validateRoleRequestStatus
-//    Admin approve/reject karta hai — status valid hai ya nahi
-//    Attaches: req.validatedRoleRequest = { roleRequest, status }
 // ═══════════════════════════════════════════════════════════════
 export const validateRoleRequestStatus = async (req, res, next) => {
   try {
@@ -189,8 +182,6 @@ export const validateRoleRequestStatus = async (req, res, next) => {
 
 // ═══════════════════════════════════════════════════════════════
 // 3️⃣ requireVerifiedKYC
-//    Agar kisi route pe sirf KYC-verified user hi access kare
-//    Usage: router.get("/...", authenticate, requireVerifiedKYC, ...)
 // ═══════════════════════════════════════════════════════════════
 export const requireVerifiedKYC = async (req, res, next) => {
   try {
@@ -239,7 +230,6 @@ export const requireVerifiedKYC = async (req, res, next) => {
 
 // ═══════════════════════════════════════════════════════════════
 // 4️⃣ requireCompleteProfile
-//    User ka firstName, phone, email set hai ya nahi
 // ═══════════════════════════════════════════════════════════════
 export const requireCompleteProfile = async (req, res, next) => {
   try {
