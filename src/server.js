@@ -6,6 +6,7 @@ import "./database/models/index.js";
 import { startCronJobs } from "./config/cron.js";
 import { verifyEmailTransport } from "./utils/emailService.js";
 import { logger } from "./utils/logger.js";
+import "./database/models/index.js";
 
 const startServer = async () => {
   try {
