@@ -1,3 +1,4 @@
+// src/modules/auth/auth.routes.js
 import express from "express";
 import {
   register,
@@ -23,21 +24,21 @@ router.post("/register", authLimiter, registerValidation, register);
 router.post("/login", authLimiter, loginValidation, login);
 
 // ═══════════════════════════════════════════
-// 📱 DEV OTP (console only — testing)
+// DEV OTP (console only — testing)
 // ═══════════════════════════════════════════
 router.post("/send-otp", authLimiter, sendOtp);
 router.post("/verify-otp", authLimiter, verifyOtp);
 
 // ═══════════════════════════════════════════
-// 🔥 Firebase Phone Auth (PRODUCTION)
+// Firebase Phone Auth (PRODUCTION)
 // ═══════════════════════════════════════════
 router.post("/firebase-login", authLimiter, firebaseLogin);
 
 // ═══════════════════════════════════════════
-// Token Management
+// ✅ FIX: Add rate limiters to token routes
 // ═══════════════════════════════════════════
-router.post("/refresh-token", refreshToken);
-router.post("/logout", logout);
+router.post("/refresh-token", authLimiter, refreshToken);
+router.post("/logout", authLimiter, logout);
 
 // ═══════════════════════════════════════════
 // Google
@@ -45,9 +46,9 @@ router.post("/logout", logout);
 router.post("/google-login", authLimiter, googleLogin);
 
 // ═══════════════════════════════════════════
-// Password Reset
+// ✅ FIX: Password reset with rate limits
 // ═══════════════════════════════════════════
-router.post("/forgot-password", forgotPassword);
-router.post("/reset-password/:token", resetPassword);
+router.post("/forgot-password", authLimiter, forgotPassword);
+router.post("/reset-password/:token", authLimiter, resetPassword);
 
 export default router;

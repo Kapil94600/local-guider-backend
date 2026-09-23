@@ -6,7 +6,8 @@ import "./database/models/index.js";
 import { startCronJobs } from "./config/cron.js";
 import { verifyEmailTransport } from "./utils/emailService.js";
 import { logger } from "./utils/logger.js";
-import "./database/models/index.js";
+import { stopBlockCacheCleanup } from "./middlewares/authMiddleware.js"; // ✅ NEW
+import { stopRateLimiterCleanup } from "./middlewares/userRateLimiter.js"; // ✅ NEW
 
 const startServer = async () => {
   try {
@@ -18,8 +19,7 @@ const startServer = async () => {
     logger.info("2️⃣ DB Connected");
 
     // ═══════════════════════════════════════════════════════════
-    // ✅ FIX B-16: NO sequelize.sync in production
-    // Use migrations instead (npm run migrate or sequelize-cli)
+    // NO sequelize.sync in production — use migrations
     // ═══════════════════════════════════════════════════════════
     if (env.NODE_ENV === "development") {
       logger.info("3️⃣ Syncing tables (DEV only)...");
@@ -27,7 +27,6 @@ const startServer = async () => {
       logger.info("4️⃣ Tables Synced (DEV)");
     } else {
       logger.info("3️⃣ Skipping sync (PROD — use migrations)");
-      // ✅ Verify connection + schema availability
       await sequelize.authenticate();
       logger.info("4️⃣ DB Authenticated (PROD)");
     }
@@ -67,8 +66,30 @@ const startServer = async () => {
 // ═══════════════════════════════════════════════════════════════
 // GRACEFUL SHUTDOWN
 // ═══════════════════════════════════════════════════════════════
-const shutdown = (signal) => {
+let isShuttingDown = false;
+
+const shutdown = async (signal) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
   logger.info(`🔴 ${signal} received — shutting down gracefully...`);
+
+  // ✅ FIX: Stop all interval timers first
+  try {
+    stopBlockCacheCleanup();
+    stopRateLimiterCleanup();
+    logger.info("   ✅ Cleanup intervals stopped");
+  } catch (e) {
+    logger.error(`   Interval cleanup error: ${e.message}`);
+  }
+
+  // Force shutdown after 10s
+  const forceTimer = setTimeout(() => {
+    logger.error("   ⚠️ Forced shutdown after 10s timeout");
+    process.exit(1);
+  }, 10000);
+
+  if (forceTimer.unref) forceTimer.unref();
 
   server.close(async () => {
     logger.info("   HTTP server closed");
@@ -80,14 +101,9 @@ const shutdown = (signal) => {
       logger.error(`   DB close error: ${e.message}`);
     }
 
+    clearTimeout(forceTimer);
     process.exit(0);
   });
-
-  // Force shutdown after 10s
-  setTimeout(() => {
-    logger.error("   ⚠️ Forced shutdown after 10s timeout");
-    process.exit(1);
-  }, 10000);
 };
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -99,8 +115,7 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("uncaughtException", (err) => {
   logger.error(`❌ Uncaught Exception: ${err.message}`);
   logger.error(err.stack);
-  // In production: alert Sentry / monitoring
-  // Then gracefully shutdown
+
   if (env.NODE_ENV === "production") {
     shutdown("uncaughtException");
   }

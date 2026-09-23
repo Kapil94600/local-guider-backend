@@ -1,3 +1,4 @@
+// src/database/models/core/WithdrawalRequest.js
 import { DataTypes } from "sequelize";
 import { sequelize } from "../../../config/database.js";
 
@@ -18,7 +19,7 @@ const WithdrawalRequest = sequelize.define(
       allowNull: false,
     },
     // ═══════════════════════════════════════════
-    // ✅ NEW: Commission tracking fields
+    // Commission tracking fields
     // ═══════════════════════════════════════════
     commissionPercentage: {
       type: DataTypes.DECIMAL(5, 2),
@@ -70,6 +71,11 @@ const WithdrawalRequest = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+    // ✅ NEW: Audit trail — which admin processed this
+    processedById: {
+      type: DataTypes.UUID,
+      allowNull: true,
+    },
   },
   {
     tableName: "withdrawal_requests",
@@ -77,6 +83,7 @@ const WithdrawalRequest = sequelize.define(
     indexes: [
       { fields: ["userId"] },
       { fields: ["status"] },
+      { fields: ["processedById"] },
     ],
   }
 );

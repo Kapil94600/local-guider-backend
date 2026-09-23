@@ -6,15 +6,33 @@ export const createPlace = async (payload) => {
   return await Place.create(payload);
 };
 
-export const getAllPlaces = async ({ city, category, page = 1, limit = 10 }) => {
+// ═══════════════════════════════════════════════════════════════
+// ✅ FIX: getAllPlaces — filter isActive by default (public safety)
+// Admin can pass includeInactive: true
+// ═══════════════════════════════════════════════════════════════
+export const getAllPlaces = async ({
+  city,
+  category,
+  page = 1,
+  limit = 10,
+  includeInactive = false,
+} = {}) => {
   const where = {};
   if (city) where.city = city;
   if (category) where.category = category;
 
+  // ✅ FIX: Only active places visible unless explicitly requested
+  if (!includeInactive) {
+    where.isActive = true;
+  }
+
+  const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+  const safePage = Math.max(parseInt(page) || 1, 1);
+
   return await Place.findAndCountAll({
     where,
-    limit: parseInt(limit),
-    offset: (parseInt(page) - 1) * parseInt(limit),
+    limit: safeLimit,
+    offset: (safePage - 1) * safeLimit,
     order: [["createdAt", "DESC"]],
   });
 };
@@ -32,6 +50,7 @@ export const getFeatured = async () => {
 
 export const searchPlaces = async (q, city) => {
   const where = {
+    isActive: true, // ✅ FIX: only active
     [Op.or]: [
       { name: { [Op.iLike]: `%${q}%` } },
       { description: { [Op.iLike]: `%${q}%` } },
@@ -57,7 +76,7 @@ export const deletePlaceById = async (id) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ GALLERY functions
+// GALLERY
 // ═══════════════════════════════════════════
 export const addGalleryImage = async (placeId, imageUrl) => {
   const place = await Place.findByPk(placeId);

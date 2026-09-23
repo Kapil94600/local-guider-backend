@@ -1,6 +1,7 @@
 // src/modules/reviews/review.repository.js
 import { Op } from "sequelize";
 import Review from "../../database/models/core/Review.js";
+import User from "../../database/models/core/User.js";
 
 // ═══════════════════════════════════════════════════════════════
 // CREATE
@@ -10,28 +11,54 @@ export const createReview = async (payload) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FEATURE B-25: GET ALL with pagination
+// ✅ FIX: GET ALL with pagination + User include
 // ═══════════════════════════════════════════════════════════════
-export const getAllReviews = async ({ page = 1, limit = 20 } = {}) => {
+export const getAllReviews = async ({
+  page = 1,
+  limit = 20,
+  sortBy = "createdAt",
+  sortOrder = "DESC",
+} = {}) => {
   const safeLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
   const safePage = Math.max(parseInt(page) || 1, 1);
 
+  // ✅ Whitelist sort fields
+  const ALLOWED_SORT = ["createdAt", "rating", "updatedAt"];
+  const safeSortBy = ALLOWED_SORT.includes(sortBy) ? sortBy : "createdAt";
+  const safeSortOrder = sortOrder?.toUpperCase() === "ASC" ? "ASC" : "DESC";
+
   return await Review.findAndCountAll({
-    order: [["createdAt", "DESC"]],
+    include: [
+      {
+        model: User,
+        attributes: ["id", "firstName", "lastName", "profileImage"],
+        required: false,
+      },
+    ],
+    order: [[safeSortBy, safeSortOrder]],
     limit: safeLimit,
     offset: (safePage - 1) * safeLimit,
+    distinct: true,
   });
 };
 
 // ═══════════════════════════════════════════════════════════════
-// GET BY ID
+// GET BY ID — with User
 // ═══════════════════════════════════════════════════════════════
 export const getReviewById = async (id) => {
-  return await Review.findByPk(id);
+  return await Review.findByPk(id, {
+    include: [
+      {
+        model: User,
+        attributes: ["id", "firstName", "lastName", "profileImage"],
+        required: false,
+      },
+    ],
+  });
 };
 
 // ═══════════════════════════════════════════════════════════════
-// DUPLICATE CHECK
+// DUPLICATE CHECK — clean logic
 // ═══════════════════════════════════════════════════════════════
 export const findDuplicateReview = async (
   userId,
@@ -40,9 +67,7 @@ export const findDuplicateReview = async (
 ) => {
   const where = { userId };
 
-  if (guiderId && photographerId) {
-    where[Op.or] = [{ guiderId }, { photographerId }];
-  } else if (guiderId) {
+  if (guiderId) {
     where.guiderId = guiderId;
   } else if (photographerId) {
     where.photographerId = photographerId;

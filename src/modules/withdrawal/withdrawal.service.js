@@ -43,7 +43,6 @@ export const submitWithdrawalRequest = async (userId, payload) => {
     throw new ApiError(400, "Invalid IFSC code format");
   }
 
-  // Fetch user role for commission
   const user = await User.findByPk(userId, {
     attributes: ["id", "role"],
   });
@@ -51,13 +50,9 @@ export const submitWithdrawalRequest = async (userId, payload) => {
 
   const commission = calculateCommission(parsedAmount, user.role);
 
-  // ═══════════════════════════════════════════════════════════════
-  // ATOMIC TRANSACTION
-  // ═══════════════════════════════════════════════════════════════
   const t = await sequelize.transaction();
 
   try {
-    // Lock wallet
     const wallet = await Wallet.findOne({
       where: { userId },
       transaction: t,
@@ -77,7 +72,7 @@ export const submitWithdrawalRequest = async (userId, payload) => {
       );
     }
 
-    // ✅ Pending check WITH LOCK (defense-in-depth)
+    // Pending check WITH LOCK (defense-in-depth)
     const existingPending = await findPendingByUserId(userId, t);
     if (existingPending) {
       throw new ApiError(
@@ -86,11 +81,10 @@ export const submitWithdrawalRequest = async (userId, payload) => {
       );
     }
 
-    // ✅ HOLD balance immediately
+    // HOLD balance immediately
     const newBalance = currentBalance - parsedAmount;
     await wallet.update({ balance: newBalance }, { transaction: t });
 
-    // ✅ Create withdrawal request with commission snapshot
     const request = await createWithdrawalRequest(
       {
         userId,
@@ -171,14 +165,16 @@ export const fetchWithdrawalRequestById = async (id) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FIX B-2: PROCESS WITHDRAWAL
-// - On APPROVE: create COMMISSION transaction (audit trail)
-// - On REJECT: refund with REFUND transaction
+// PROCESS WITHDRAWAL (Admin)
+// ✅ FIX 1: Remove COMMISSION transaction (it was informational-only,
+//           confusing ledger)
+// ✅ FIX 2: Add processedById audit trail
 // ═══════════════════════════════════════════════════════════════
 export const processWithdrawalRequest = async (
   requestId,
   status,
-  adminMessage
+  adminMessage,
+  adminId = null // ✅ NEW: audit trail
 ) => {
   if (!["APPROVED", "REJECTED"].includes(status)) {
     throw new ApiError(400, "Invalid status");
@@ -187,7 +183,6 @@ export const processWithdrawalRequest = async (
   const t = await sequelize.transaction();
 
   try {
-    // ✅ Use locked fetch (returns plain object with User)
     const request = await getWithdrawalRequestById(requestId, t);
     if (!request) {
       throw new ApiError(404, "Withdrawal request not found");
@@ -212,7 +207,6 @@ export const processWithdrawalRequest = async (
 
         await wallet.update({ balance: newBalance }, { transaction: t });
 
-        // ✅ REFUND transaction
         await WalletTransaction.create(
           {
             walletId: wallet.id,
@@ -232,6 +226,7 @@ export const processWithdrawalRequest = async (
           status,
           adminMessage: adminMessage || null,
           processedAt: new Date(),
+          processedById: adminId, // ✅ audit trail
         },
         { transaction: t }
       );
@@ -257,42 +252,12 @@ export const processWithdrawalRequest = async (
 
     // ═══════════════════════════════════════════════════════════════
     // CASE 2: APPROVED
-    // ✅ FIX B-2: Create COMMISSION transaction for audit trail
-    // Balance already held on SUBMIT — no new deduction
+    // ✅ FIX: NO COMMISSION transaction — commission is already
+    //          accounted for in the WITHDRAWAL transaction
+    //          (created at submission time). Ledger stays clean.
     // ═══════════════════════════════════════════════════════════════
     const commissionAmount = parseFloat(request.commissionAmount || 0);
-    const commissionPercentage = parseFloat(request.commissionPercentage || 0);
     const netAmount = parseFloat(request.netAmount || request.amount);
-
-    // ✅ FIX B-2: Log COMMISSION transaction (audit trail)
-    if (commissionAmount > 0) {
-      const wallet = await Wallet.findOne({
-        where: { userId: request.userId },
-        transaction: t,
-      });
-
-      if (wallet) {
-        // Log commission as informational (no balance change)
-        await WalletTransaction.create(
-          {
-            walletId: wallet.id,
-            transactionType: "COMMISSION",
-            amount: commissionAmount,
-            balanceAfter: parseFloat(wallet.balance || 0), // No change
-            referenceId: request.id,
-            description: `Commission for withdrawal ${request.id.slice(
-              0,
-              8
-            )} — ${commissionPercentage}% of ₹${request.amount}`,
-          },
-          { transaction: t }
-        );
-
-        logger.info(
-          `💰 Commission logged: ₹${commissionAmount} (${commissionPercentage}%) for withdrawal ${request.id.slice(0, 8)}`
-        );
-      }
-    }
 
     await updateWithdrawalRequest(
       requestId,
@@ -300,6 +265,7 @@ export const processWithdrawalRequest = async (
         status,
         adminMessage: adminMessage || null,
         processedAt: new Date(),
+        processedById: adminId, // ✅ audit trail
       },
       { transaction: t }
     );
@@ -307,14 +273,22 @@ export const processWithdrawalRequest = async (
     await t.commit();
 
     logger.info(
-      `✅ Withdrawal approved: ${requestId.slice(0, 8)} | Net: ₹${netAmount} | Commission: ₹${commissionAmount}`
+      `✅ Withdrawal approved: ${requestId.slice(0, 8)} | Net: ₹${netAmount} | Commission: ₹${commissionAmount} | Admin: ${
+        adminId ? adminId.slice(0, 8) : "N/A"
+      }`
     );
 
     try {
       await addNotification({
         userId: request.userId,
         title: "Withdrawal Approved ✅",
-        message: `Your withdrawal of ₹${netAmount.toFixed(2)} has been approved. Amount will be credited to ${request.bankName} account ending ${String(request.accountNumber).slice(-4)}. (Commission: ₹${commissionAmount.toFixed(2)})`,
+        message: `Your withdrawal of ₹${netAmount.toFixed(
+          2
+        )} has been approved. Amount will be credited to ${
+          request.bankName
+        } account ending ${String(request.accountNumber).slice(-4)}. (Commission: ₹${commissionAmount.toFixed(
+          2
+        )})`,
         type: "WITHDRAWAL",
         data: {
           withdrawalId: request.id,

@@ -109,10 +109,11 @@ export const createRazorpayOrder = async (bookingId, userId) => {
     );
   }
 
+  // ✅ FIX: Check for ANY existing payment (wallet or razorpay)
   const existingPayment = await WalletTransaction.findOne({
     where: {
       referenceId: booking.id,
-      transactionType: "DEBIT",
+      transactionType: { [Op.in]: ["DEBIT", "RAZORPAY_PAYMENT"] },
     },
   });
   if (existingPayment) {
@@ -238,8 +239,13 @@ export const verifyPaymentSignature = async ({
     throw new Error("Invalid payment signature");
   }
 
-  // ✅ AMOUNT CROSS-CHECK
+  // ✅ Verify order status
   const razorpayOrder = await razorpay.orders.fetch(razorpayOrderId);
+
+  if (razorpayOrder.status !== "paid") {
+    throw new Error(`Order not paid. Status: ${razorpayOrder.status}`);
+  }
+
   const orderAmount = razorpayOrder.amount / 100;
   const expectedAmount = parseFloat(booking.totalAmount);
 
@@ -253,7 +259,7 @@ export const verifyPaymentSignature = async ({
   const alreadyProcessed = await WalletTransaction.findOne({
     where: {
       referenceId: booking.id,
-      transactionType: "DEBIT",
+      transactionType: { [Op.in]: ["DEBIT", "RAZORPAY_PAYMENT"] },
     },
   });
   if (alreadyProcessed) {
@@ -285,12 +291,13 @@ export const verifyPaymentSignature = async ({
 
     const amount = parseFloat(booking.totalAmount);
 
+    // ✅ FIX: Use RAZORPAY_PAYMENT type (not DEBIT) — so refund logic won't confuse
     const transaction = await WalletTransaction.create(
       {
         walletId: wallet.id,
-        transactionType: "DEBIT",
+        transactionType: "RAZORPAY_PAYMENT",
         amount: amount,
-        balanceAfter: parseFloat(wallet.balance),
+        balanceAfter: parseFloat(wallet.balance), // wallet unchanged
         referenceId: booking.id,
         description: `Razorpay payment for booking ${booking.id.slice(
           0,
@@ -525,7 +532,7 @@ export const payBookingViaWallet = async (bookingId, userId) => {
   const existingPayment = await WalletTransaction.findOne({
     where: {
       referenceId: booking.id,
-      transactionType: "DEBIT",
+      transactionType: { [Op.in]: ["DEBIT", "RAZORPAY_PAYMENT"] },
     },
   });
   if (existingPayment) {
@@ -669,6 +676,9 @@ export const payBookingViaWallet = async (bookingId, userId) => {
 
 // ═══════════════════════════════════════════════════════════════
 // REFUND WALLET FOR BOOKING
+// ✅ CRITICAL FIX:
+//   - Only refund wallet-based DEBIT payments
+//   - Razorpay payments should trigger Razorpay refund instead
 // ═══════════════════════════════════════════════════════════════
 export const refundWalletForBooking = async (
   booking,
@@ -678,22 +688,43 @@ export const refundWalletForBooking = async (
   const t = transaction || (await sequelize.transaction());
 
   try {
+    // ✅ FIX: Only look for DEBIT (wallet payments), NOT RAZORPAY_PAYMENT
     const paymentTxn = await WalletTransaction.findOne({
       where: {
         referenceId: booking.id,
-        transactionType: "DEBIT",
+        transactionType: "DEBIT", // ✅ Only wallet payments
       },
       transaction: t,
       lock: t.LOCK.UPDATE,
     });
 
     if (!paymentTxn) {
-      logger.info(
-        `ℹ️ No payment found for booking ${booking.id.slice(
-          0,
-          8
-        )} — skipping refund`
-      );
+      // Check if this was Razorpay payment (no refund to wallet)
+      const razorpayTxn = await WalletTransaction.findOne({
+        where: {
+          referenceId: booking.id,
+          transactionType: "RAZORPAY_PAYMENT",
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (razorpayTxn) {
+        logger.info(
+          `ℹ️ Booking ${booking.id.slice(
+            0,
+            8
+          )} was paid via Razorpay — no wallet refund`
+        );
+      } else {
+        logger.info(
+          `ℹ️ No payment found for booking ${booking.id.slice(
+            0,
+            8
+          )} — skipping refund`
+        );
+      }
+
       if (outerTxn) await t.commit();
       return null;
     }
@@ -766,9 +797,7 @@ export const refundWalletForBooking = async (
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FIX B-6: RAZORPAY WEBHOOK HANDLER
-// - payment.failed: DON'T set invalid paymentStatus: "FAILED"
-//   Instead, log to booking.notes + notify user
+// RAZORPAY WEBHOOK HANDLER
 // ═══════════════════════════════════════════════════════════════
 export const handleRazorpayWebhook = async (rawBody, parsedBody, signature) => {
   if (!env.RAZORPAY_WEBHOOK_SECRET) {
@@ -783,7 +812,7 @@ export const handleRazorpayWebhook = async (rawBody, parsedBody, signature) => {
   }
 
   const event = parsedBody.event;
-  logger.info(`📥 Razorpay webhook: ${event}`);
+  logger.debug(`📥 Razorpay webhook: ${event}`);
 
   if (event === "payment.captured" || event === "order.paid") {
     const payment = parsedBody.payload.payment.entity;
@@ -887,7 +916,7 @@ export const handleRazorpayWebhook = async (rawBody, parsedBody, signature) => {
     const existing = await WalletTransaction.findOne({
       where: {
         referenceId: booking.id,
-        transactionType: "DEBIT",
+        transactionType: { [Op.in]: ["DEBIT", "RAZORPAY_PAYMENT"] },
       },
     });
     if (existing) {
@@ -916,7 +945,7 @@ export const handleRazorpayWebhook = async (rawBody, parsedBody, signature) => {
         await WalletTransaction.create(
           {
             walletId: wallet.id,
-            transactionType: "DEBIT",
+            transactionType: "RAZORPAY_PAYMENT", // ✅ FIX
             amount: webhookAmount,
             balanceAfter: parseFloat(wallet.balance),
             referenceId: lockedBooking.id,
@@ -948,8 +977,7 @@ export const handleRazorpayWebhook = async (rawBody, parsedBody, signature) => {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ✅ FIX B-6: payment.failed — DON'T use invalid enum "FAILED"
-  // Instead: log to booking.notes + notify user
+  // payment.failed — DON'T use invalid enum "FAILED"
   // ═══════════════════════════════════════════════════════════════
   if (event === "payment.failed") {
     const payment = parsedBody.payload.payment.entity;
@@ -962,7 +990,6 @@ export const handleRazorpayWebhook = async (rawBody, parsedBody, signature) => {
       try {
         const booking = await Booking.findByPk(bookingIdFromNotes);
         if (booking) {
-          // ✅ Append to notes — DON'T change paymentStatus enum
           const failureNote = `\n[Payment Failed ${new Date().toISOString()}] Razorpay Payment ID: ${paymentId} — Reason: ${errorDescription}`;
           await booking.update({
             notes: `${booking.notes || ""}${failureNote}`,

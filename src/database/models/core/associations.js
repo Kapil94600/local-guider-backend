@@ -7,7 +7,7 @@ import WalletTransaction from "./WalletTransaction.js";
 import Guider from "./Guider.js";
 import Photographer from "./Photographer.js";
 import Booking from "./Booking.js";
-import BookingStatusHistory from "./BookingStatusHistory.js";  // ✅ NEW
+import BookingStatusHistory from "./BookingStatusHistory.js";
 import Review from "./Review.js";
 import Favorite from "./Favorite.js";
 import Place from "./Place.js";
@@ -37,6 +37,10 @@ export const setupAssociations = () => {
 
   User.hasMany(RefreshToken, { foreignKey: "userId" });
   RefreshToken.belongsTo(User, { foreignKey: "userId" });
+
+  // ✅ FIX: RefreshToken ↔ Device association
+  Device.hasMany(RefreshToken, { foreignKey: "deviceId" });
+  RefreshToken.belongsTo(Device, { foreignKey: "deviceId" });
 
   // ═══════════════════════════════════════════════════════════════
   // RESET TOKENS
@@ -117,22 +121,30 @@ export const setupAssociations = () => {
   });
 
   // ═══════════════════════════════════════════════════════════════
-  // ✅ NEW: BOOKING STATUS HISTORY
+  // ✅ FIX: BOOKING STATUS HISTORY — FK field mismatch
+  // ═══════════════════════════════════════════════════════════════
+  // Actual DB column is `changed_by_id` (snake_case)
+  // Sequelize association must specify BOTH name + field
   // ═══════════════════════════════════════════════════════════════
   Booking.hasMany(BookingStatusHistory, {
     foreignKey: "bookingId",
     as: "statusHistory",
     onDelete: "CASCADE",
   });
+
   BookingStatusHistory.belongsTo(Booking, {
     foreignKey: "bookingId",
     as: "booking",
   });
 
+  // ✅ CRITICAL FIX: field mapping
   BookingStatusHistory.belongsTo(User, {
-    foreignKey: "changedById",
+    foreignKey: {
+      name: "changedById",       // model attribute
+      field: "changed_by_id",    // actual DB column
+    },
     as: "changedBy",
-    constraints: false, // ✅ Allow null changedById
+    constraints: false,
   });
 
   // ═══════════════════════════════════════════════════════════════
@@ -142,11 +154,12 @@ export const setupAssociations = () => {
   IdCard.belongsTo(User, { foreignKey: "userId" });
 
   // ═══════════════════════════════════════════════════════════════
-  // BLOCKS
+  // BLOCKS — clear aliases to avoid confusion
   // ═══════════════════════════════════════════════════════════════
-  User.hasMany(Block, { foreignKey: "userId" });
+  User.hasMany(Block, { as: "blocksGiven", foreignKey: "userId" });
   Block.belongsTo(User, { as: "blocker", foreignKey: "userId" });
-  User.hasMany(Block, { as: "blockedBy", foreignKey: "blockedUserId" });
+
+  User.hasMany(Block, { as: "blocksReceived", foreignKey: "blockedUserId" });
   Block.belongsTo(User, { as: "blocked", foreignKey: "blockedUserId" });
 
   // ═══════════════════════════════════════════════════════════════
@@ -160,6 +173,7 @@ export const setupAssociations = () => {
     as: "conversationsAsParticipant1",
     foreignKey: "participant1Id",
   });
+
   Conversation.belongsTo(User, {
     as: "participant2",
     foreignKey: "participant2Id",
@@ -183,4 +197,11 @@ export const setupAssociations = () => {
   // ═══════════════════════════════════════════════════════════════
   User.hasMany(WithdrawalRequest, { foreignKey: "userId" });
   WithdrawalRequest.belongsTo(User, { foreignKey: "userId" });
+
+  // ✅ NEW: Track which admin processed the withdrawal
+  WithdrawalRequest.belongsTo(User, {
+    as: "processedBy",
+    foreignKey: "processedById",
+    constraints: false,
+  });
 };

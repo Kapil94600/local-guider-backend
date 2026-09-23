@@ -44,13 +44,15 @@ export const getWithdrawalRequestById = async (req, res, next) => {
   }
 };
 
+// ✅ FIX: Pass admin ID for audit trail
 export const updateWithdrawalStatus = async (req, res, next) => {
   try {
     const { status, adminMessage } = req.body;
     const request = await processWithdrawalRequest(
       req.params.id,
       status,
-      adminMessage
+      adminMessage,
+      req.user.id // ✅ NEW: audit trail
     );
     return ApiResponse.success(
       res,

@@ -1,6 +1,7 @@
 // src/utils/emailService.js
 import nodemailer from "nodemailer";
 import { env } from "../config/env.js";
+import { logger } from "./logger.js";
 
 // ═══════════════════════════════════════════════════════════════
 // SMTP TRANSPORTER (singleton)
@@ -19,32 +20,28 @@ const transporter = nodemailer.createTransport({
 });
 
 // ═══════════════════════════════════════════════════════════════
-// SEND EMAIL
+// ✅ FIX: sendEmail THROWS on error (no silent swallow)
 // ═══════════════════════════════════════════════════════════════
 export const sendEmail = async ({ to, subject, html, text = null }) => {
-  try {
-    if (!to) {
-      throw new Error("Recipient email is required");
-    }
-
-    const fromAddress = `"${env.FROM_NAME || "Local Guider"}" <${
-      env.FROM_EMAIL || env.SMTP_USER
-    }>`;
-
-    const info = await transporter.sendMail({
-      from: fromAddress,
-      to,
-      subject,
-      html,
-      text: text || html.replace(/<[^>]+>/g, ""), // Fallback plain text
-    });
-
-    console.log(`📧 Email sent: ${info.messageId} → ${to}`);
-    return { success: true, messageId: info.messageId };
-  } catch (error) {
-    console.error(`❌ Email error (${to}):`, error.message);
-    return { success: false, error: error.message };
+  if (!to) {
+    throw new Error("Recipient email is required");
   }
+
+  const fromAddress = `"${env.FROM_NAME || "Local Guider"}" <${
+    env.FROM_EMAIL || env.SMTP_USER
+  }>`;
+
+  // ✅ Let it throw if it fails
+  const info = await transporter.sendMail({
+    from: fromAddress,
+    to,
+    subject,
+    html,
+    text: text || html.replace(/<[^>]+>/g, ""),
+  });
+
+  logger.info(`📧 Email sent: ${info.messageId} → ${to}`);
+  return { success: true, messageId: info.messageId };
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -53,10 +50,10 @@ export const sendEmail = async ({ to, subject, html, text = null }) => {
 export const verifyEmailTransport = async () => {
   try {
     await transporter.verify();
-    console.log("✅ Email transport verified");
+    logger.info("✅ Email transport verified");
     return true;
   } catch (error) {
-    console.error("❌ Email transport NOT verified:", error.message);
+    logger.error(`❌ Email transport NOT verified: ${error.message}`);
     return false;
   }
 };

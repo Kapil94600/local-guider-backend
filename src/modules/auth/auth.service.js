@@ -21,6 +21,7 @@ import {
 } from "./token.service.js";
 import { sendEmail } from "../../utils/emailService.js";
 import { env } from "../../config/env.js";
+import { logger } from "../../utils/logger.js";
 
 // ═══════════════════════════════════════════
 // ⚡ CACHE — Firebase auth instance
@@ -45,13 +46,19 @@ const otpStore = new Map();
 // ═══════════════════════════════════════════
 // ✅ HELPER: Strip sensitive fields from user
 // ═══════════════════════════════════════════
+const SENSITIVE_FIELDS = [
+  "passwordHash",
+  "resetTokenHash",
+  "resetTokenExpires",
+  "googleId",
+];
+
 const sanitizeUser = (user) => {
   if (!user) return null;
   const u = user.toJSON ? user.toJSON() : { ...user };
-  delete u.passwordHash;
-  delete u.resetTokenHash;
-  delete u.resetTokenExpires;
-  delete u.googleId;
+  for (const field of SENSITIVE_FIELDS) {
+    delete u[field];
+  }
   return u;
 };
 
@@ -69,12 +76,12 @@ const saveRefreshTokenInBackground = (userId, refreshToken) => {
     token: refreshToken,
     expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
   }).catch((err) =>
-    console.error("⚠️ Background refresh save failed:", err.message)
+    logger.error(`⚠️ Background refresh save failed: ${err.message}`)
   );
 };
 
 // ═══════════════════════════════════════════
-// ✅ Register
+// ✅ Register — race-safe
 // ═══════════════════════════════════════════
 export const registerUser = async (payload) => {
   const [existingUser, hashedPassword] = await Promise.all([
@@ -84,23 +91,39 @@ export const registerUser = async (payload) => {
 
   if (existingUser) throw new Error("User already exists");
 
-  const user = await createUser({
-    firstName: payload.firstName,
-    lastName: payload.lastName || null,
-    email: payload.email,
-    phone: payload.phone,
-    passwordHash: hashedPassword,
-    role: "USER",
-  });
+  let user;
+  try {
+    user = await createUser({
+      firstName: payload.firstName,
+      lastName: payload.lastName || null,
+      email: payload.email,
+      phone: payload.phone,
+      passwordHash: hashedPassword,
+      role: "USER",
+    });
+  } catch (err) {
+    // ✅ FIX: Unique constraint error → race condition
+    if (err.name === "SequelizeUniqueConstraintError") {
+      throw new Error("User already exists");
+    }
+    throw err;
+  }
 
-  const [, tokens] = await Promise.all([
-    createWallet(user.id),
-    Promise.resolve(generateTokensForUser(user)),
-  ]);
+  // ✅ FIX: Wallet creation awaited (not fire-and-forget)
+  try {
+    await createWallet(user.id);
+  } catch (walletErr) {
+    logger.error(
+      `❌ Wallet creation failed for user ${user.id}: ${walletErr.message}`
+    );
+    // Wallet is critical — throw to fail registration
+    // (User can retry; prevents inconsistent state)
+    throw new Error("Account setup failed. Please try again.");
+  }
 
+  const tokens = generateTokensForUser(user);
   saveRefreshTokenInBackground(user.id, tokens.refreshToken);
 
-  // ✅ FIX: passwordHash leak — sanitize user
   return { user: sanitizeUser(user), ...tokens };
 };
 
@@ -119,7 +142,6 @@ export const loginUser = async (email, password) => {
   const tokens = generateTokensForUser(user);
   saveRefreshTokenInBackground(user.id, tokens.refreshToken);
 
-  // ✅ FIX: passwordHash leak — sanitize user
   return { user: sanitizeUser(user), ...tokens };
 };
 
@@ -130,7 +152,7 @@ export const sendOtpService = async (phone) => {
   if (!phone) throw new Error("Phone number is required");
 
   const cleanPhone = phone.trim();
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const otp = crypto.randomInt(100000, 1000000).toString(); // ✅ crypto-secure
 
   otpStore.set(cleanPhone, {
     otp,
@@ -152,7 +174,7 @@ export const sendOtpService = async (phone) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Verify OTP — DEV MODE
+// ✅ Verify OTP — DEV MODE (race-safe)
 // ═══════════════════════════════════════════
 export const verifyOtpService = async (phone, otp) => {
   if (!phone) throw new Error("Phone number is required");
@@ -182,37 +204,54 @@ export const verifyOtpService = async (phone, otp) => {
   let user = await findUserByPhone(cleanPhone);
 
   if (!user) {
-    user = await createUser({
-      firstName: "User",
-      lastName: null,
-      email: `${cleanPhone.replace("+", "")}@localguider.com`,
-      phone: cleanPhone,
-      passwordHash: null,
-      role: "USER",
-      isVerified: true,
-      isActive: true,
-      accountStatus: "ACTIVE",
-      phoneVerifiedAt: new Date(),
-    });
+    // ✅ FIX: Handle race condition
+    try {
+      user = await createUser({
+        firstName: "User",
+        lastName: null,
+        email: `${cleanPhone.replace("+", "")}@localguider.com`,
+        phone: cleanPhone,
+        passwordHash: null,
+        role: "USER",
+        isVerified: true,
+        isActive: true,
+        accountStatus: "ACTIVE",
+        phoneVerifiedAt: new Date(),
+      });
+    } catch (err) {
+      if (err.name === "SequelizeUniqueConstraintError") {
+        // Race: another request created user — refetch
+        user = await findUserByPhone(cleanPhone);
+        if (!user) throw err; // Still broken
+      } else {
+        throw err;
+      }
+    }
 
-    createWallet(user.id).catch((err) =>
-      console.error("Wallet create error:", err.message)
-    );
+    // ✅ Wallet awaited
+    if (user.wasNew) {
+      try {
+        await createWallet(user.id);
+      } catch (walletErr) {
+        logger.error(
+          `❌ Wallet creation failed in OTP flow: ${walletErr.message}`
+        );
+      }
+    }
 
-    console.log("✅ New user created via OTP:", user.id);
+    logger.info(`✅ New user created via OTP: ${user.id}`);
   } else {
-    console.log("✅ Existing user logged in via OTP:", user.id);
+    logger.info(`✅ Existing user logged in via OTP: ${user.id}`);
   }
 
   const tokens = generateTokensForUser(user);
   saveRefreshTokenInBackground(user.id, tokens.refreshToken);
 
-  // ✅ FIX: passwordHash leak — sanitize user
   return { user: sanitizeUser(user), ...tokens };
 };
 
 // ═══════════════════════════════════════════
-// 🔥 Firebase Phone Auth
+// 🔥 Firebase Phone Auth (race-safe)
 // ═══════════════════════════════════════════
 export const verifyFirebaseTokenService = async (idToken) => {
   if (!idToken) throw new Error("ID token is required");
@@ -224,28 +263,43 @@ export const verifyFirebaseTokenService = async (idToken) => {
   let user = await findUserByPhone(phone);
 
   if (!user) {
-    user = await createUser({
-      firstName: "User",
-      lastName: null,
-      email: `${phone.replace("+", "")}@localguider.com`,
-      phone,
-      passwordHash: null,
-      role: "USER",
-      isVerified: true,
-      isActive: true,
-      accountStatus: "ACTIVE",
-      phoneVerifiedAt: new Date(),
-    });
+    try {
+      user = await createUser({
+        firstName: "User",
+        lastName: null,
+        email: `${phone.replace("+", "")}@localguider.com`,
+        phone,
+        passwordHash: null,
+        role: "USER",
+        isVerified: true,
+        isActive: true,
+        accountStatus: "ACTIVE",
+        phoneVerifiedAt: new Date(),
+      });
+      user.wasNew = true;
+    } catch (err) {
+      if (err.name === "SequelizeUniqueConstraintError") {
+        user = await findUserByPhone(phone);
+        if (!user) throw err;
+      } else {
+        throw err;
+      }
+    }
 
-    createWallet(user.id).catch((err) =>
-      console.error("Wallet create error:", err.message)
-    );
+    if (user.wasNew) {
+      try {
+        await createWallet(user.id);
+      } catch (walletErr) {
+        logger.error(
+          `❌ Wallet creation failed in Firebase flow: ${walletErr.message}`
+        );
+      }
+    }
   }
 
   const tokens = generateTokensForUser(user);
   saveRefreshTokenInBackground(user.id, tokens.refreshToken);
 
-  // ✅ FIX: passwordHash leak — sanitize user
   return { user: sanitizeUser(user), ...tokens };
 };
 
@@ -277,7 +331,7 @@ export const logoutUser = async (refreshToken) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Google Login
+// ✅ Google Login (race-safe)
 // ═══════════════════════════════════════════
 export const googleLoginService = async (payload) => {
   const { googleId, email, firstName, lastName, profileImage } = payload;
@@ -290,35 +344,53 @@ export const googleLoginService = async (payload) => {
   let user = userByGoogle || userByEmail;
 
   if (!user) {
-    user = await createUser({
-      firstName,
-      lastName,
-      email,
-      phone: null,
-      passwordHash: null,
-      googleId,
-      provider: "GOOGLE",
-      profileImage,
-      role: "USER",
-      isVerified: true,
-      accountStatus: "ACTIVE",
-    });
+    try {
+      user = await createUser({
+        firstName,
+        lastName,
+        email,
+        phone: null,
+        passwordHash: null,
+        googleId,
+        provider: "GOOGLE",
+        profileImage,
+        role: "USER",
+        isVerified: true,
+        accountStatus: "ACTIVE",
+      });
+      user.wasNew = true;
+    } catch (err) {
+      if (err.name === "SequelizeUniqueConstraintError") {
+        // Race: refetch
+        user =
+          (await findUserByGoogleId(googleId)) ||
+          (await findUserByEmail(email));
+        if (!user) throw err;
+      } else {
+        throw err;
+      }
+    }
 
-    createWallet(user.id).catch((err) =>
-      console.error("Wallet create error:", err.message)
-    );
+    if (user.wasNew) {
+      try {
+        await createWallet(user.id);
+      } catch (walletErr) {
+        logger.error(
+          `❌ Wallet creation failed in Google flow: ${walletErr.message}`
+        );
+      }
+    }
   }
 
   const tokens = generateTokensForUser(user);
   saveRefreshTokenInBackground(user.id, tokens.refreshToken);
 
-  // ✅ FIX: passwordHash leak — sanitize user
   return { user: sanitizeUser(user), ...tokens };
 };
 
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════
 // ✅ Forgot Password — timing-attack safe
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════
 export const forgotPasswordService = async (email) => {
   const user = await findUserByEmail(email);
 
@@ -352,7 +424,7 @@ export const forgotPasswordService = async (email) => {
       <a href="${resetUrl}">Reset Password</a>
       <p>If you didn't request this, you can safely ignore this email.</p>
     `,
-  }).catch((err) => console.error("Email send failed:", err.message));
+  }).catch((err) => logger.error(`Email send failed: ${err.message}`));
 
   return { message: GENERIC_MESSAGE };
 };

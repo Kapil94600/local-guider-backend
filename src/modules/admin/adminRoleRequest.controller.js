@@ -7,15 +7,19 @@ import Guider from "../../database/models/core/Guider.js";
 import Photographer from "../../database/models/core/Photographer.js";
 import IdCard from "../../database/models/core/IdCard.js";
 import jwt from "jsonwebtoken";
+import crypto from "crypto"; // ✅ NEW
 import { env } from "../../config/env.js";
+import { logger } from "../../utils/logger.js";
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ HELPER: Generate unique card number
+// ✅ FIX: Generate unique card number
+// Timestamp (base36) + 6 random hex chars = ~16M combos per ms
 // ═══════════════════════════════════════════════════════════════
 const generateCardNumber = (role) => {
   const prefix = role === "GUIDER" ? "LG-G" : "LG-P";
-  const randomNum = Math.floor(100000 + Math.random() * 900000);
-  return `${prefix}-${randomNum}`;
+  const timestamp = Date.now().toString(36).toUpperCase().slice(-5);
+  const random = crypto.randomBytes(3).toString("hex").toUpperCase();
+  return `${prefix}-${timestamp}-${random}`;
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -45,9 +49,9 @@ export const getRoleRequests = async (req, res, next) => {
     next(error);
   }
 };
+
 // ═══════════════════════════════════════════════════════════════
-// ✅ FEATURE B-19: UPDATE ROLE REQUEST DOCS (Admin only)
-// Allows admin to fix/upload docs before approval
+// UPDATE ROLE REQUEST DOCS (Admin only)
 // ═══════════════════════════════════════════════════════════════
 export const updateRoleRequestDocs = async (req, res, next) => {
   try {
@@ -71,7 +75,6 @@ export const updateRoleRequestDocs = async (req, res, next) => {
       });
     }
 
-    // ✅ Only PENDING requests can be edited
     if (roleRequest.status !== "PENDING") {
       return res.status(400).json({
         success: false,
@@ -79,7 +82,6 @@ export const updateRoleRequestDocs = async (req, res, next) => {
       });
     }
 
-    // ✅ Build update payload — only provided fields
     const updatePayload = {};
 
     if (selfieUrl !== undefined) updatePayload.selfieUrl = selfieUrl;
@@ -115,7 +117,7 @@ export const updateRoleRequestDocs = async (req, res, next) => {
 
     await roleRequest.update(updatePayload);
 
-    console.log(
+    logger.info(
       `✅ Role request ${id.slice(0, 8)} docs updated by admin ${req.user.id.slice(0, 8)}`
     );
 
@@ -125,10 +127,11 @@ export const updateRoleRequestDocs = async (req, res, next) => {
       roleRequest
     );
   } catch (error) {
-    console.error("❌ updateRoleRequestDocs error:", error.message);
+    logger.error(`❌ updateRoleRequestDocs error: ${error.message}`);
     next(error);
   }
 };
+
 // ═══════════════════════════════════════════════════════════════
 // UPDATE ROLE REQUEST STATUS (APPROVE/REJECT)
 // ═══════════════════════════════════════════════════════════════
@@ -199,8 +202,7 @@ export const updateRoleRequestStatus = async (req, res, next) => {
       }
 
       // ═══════════════════════════════════════════════════════════
-      // ✅ FIX B-3: ID CARD CREATION INSIDE TRANSACTION
-      // (Previously: fire-and-forget after commit — could fail silently)
+      // ID CARD CREATION INSIDE TRANSACTION
       // ═══════════════════════════════════════════════════════════
       const existingCard = await IdCard.findOne({
         where: { userId },
@@ -208,23 +210,26 @@ export const updateRoleRequestStatus = async (req, res, next) => {
       });
 
       if (!existingCard) {
-        // Fetch place names for card
-        const Place = (
-          await import("../../database/models/core/Place.js")
-        ).default;
+        // ✅ Static import at top (no dynamic import inside transaction)
+        const Place = (await import("../../database/models/core/Place.js"))
+          .default;
         const placeIds = roleRequest.placeIds || [];
         let placeNames = [];
 
         if (placeIds.length > 0) {
-          try {
-            const places = await Place.findAll({
-              where: { id: placeIds },
-              attributes: ["name"],
-              transaction,
-            });
-            placeNames = places.map((p) => p.name);
-          } catch (e) {
-            console.warn("Place names fetch failed:", e.message);
+          const places = await Place.findAll({
+            where: { id: placeIds },
+            attributes: ["name"],
+            transaction,
+          });
+          placeNames = places.map((p) => p.name);
+
+          if (places.length < placeIds.length) {
+            logger.warn(
+              `Role request ${id.slice(0, 8)}: ${
+                placeIds.length - places.length
+              } place(s) not found`
+            );
           }
         }
 
@@ -232,7 +237,7 @@ export const updateRoleRequestStatus = async (req, res, next) => {
           {
             userId,
             role,
-            cardNumber: generateCardNumber(role),
+            cardNumber: generateCardNumber(role), // ✅ collision-safe
             fullName: roleRequest.fullName,
             companyName: roleRequest.companyName,
             location: roleRequest.location,
@@ -248,7 +253,7 @@ export const updateRoleRequestStatus = async (req, res, next) => {
           { transaction }
         );
 
-        console.log(
+        logger.info(
           `✅ ID card created in-transaction for user ${userId.slice(0, 8)}`
         );
       }
@@ -264,7 +269,7 @@ export const updateRoleRequestStatus = async (req, res, next) => {
     await roleRequest.reload();
 
     // ═══════════════════════════════════════════════════════════════
-    // ✅ FIX B-5: SOCKET EMIT + FORCE RECONNECT (fresh token)
+    // SOCKET EMIT + FORCE RECONNECT (fresh token)
     // ═══════════════════════════════════════════════════════════════
     if (status === "APPROVED") {
       try {
@@ -299,26 +304,24 @@ export const updateRoleRequestStatus = async (req, res, next) => {
             accessToken: freshAccessToken,
           });
 
-          console.log(
+          logger.info(
             `📡 role:updated emitted → user:${user.id} (${user.role})`
           );
 
-          // ✅ FIX B-5: Force disconnect sockets so client reconnects
-          // with the fresh token → new role in socket metadata
           const userSockets = await io
             .in(`user:${user.id}`)
             .fetchSockets();
 
           for (const s of userSockets) {
-            s.disconnect(true); // Client will auto-reconnect
+            s.disconnect(true);
           }
 
-          console.log(
+          logger.info(
             `🔌 Disconnected ${userSockets.length} socket(s) for fresh role sync`
           );
         }
       } catch (socketErr) {
-        console.error("❌ Socket emit failed:", socketErr.message);
+        logger.error(`❌ Socket emit failed: ${socketErr.message}`);
       }
     }
 
@@ -329,7 +332,7 @@ export const updateRoleRequestStatus = async (req, res, next) => {
     );
   } catch (error) {
     await transaction.rollback();
-    console.error("❌ updateRoleRequestStatus error:", error);
+    logger.error(`❌ updateRoleRequestStatus error: ${error.message}`);
     next(error);
   }
 };

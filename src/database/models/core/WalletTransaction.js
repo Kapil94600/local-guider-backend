@@ -1,8 +1,7 @@
+// src/database/models/core/WalletTransaction.js
 import { DataTypes } from "sequelize";
 import { sequelize } from "../../../config/database.js";
-import {
-  WALLET_TRANSACTION_VALUES,
-} from "../../../constants/wallet.js";
+import { WALLET_TRANSACTION_VALUES } from "../../../constants/wallet.js";
 
 const WalletTransaction = sequelize.define(
   "WalletTransaction",
@@ -12,7 +11,6 @@ const WalletTransaction = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
-    // ✅ New field – wallet reference
     walletId: {
       type: DataTypes.UUID,
       allowNull: false,

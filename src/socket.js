@@ -96,24 +96,20 @@ io.use(async (socket, next) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// Online users map — userId → Set<socketId>
+// Online users map
 // ═══════════════════════════════════════════════════════════════
 const onlineUsers = new Map();
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FIX B-5: Presence broadcast with Redis caching
-// - Cache chat partners for 5 min to avoid N+1 queries
-// - Only emit to relevant users (self + chat partners)
+// ✅ FIX: Presence broadcast with Redis caching
 // ═══════════════════════════════════════════════════════════════
 const broadcastPresence = async (userId, isOnline) => {
   try {
-    // Emit to the user's own room (multi-device sync)
     io.to(`user:${userId}`).emit("presence:update", {
       userId,
       isOnline,
     });
 
-    // ✅ FIX B-5: Try cache first
     const cacheKey = `user-chat-partners:${userId}`;
     let partnerIds = null;
 
@@ -126,7 +122,6 @@ const broadcastPresence = async (userId, isOnline) => {
       // Redis unavailable — fall through to DB
     }
 
-    // ✅ Cache miss — fetch from DB
     if (!partnerIds) {
       const conversations = await getConversationsByUserId(userId);
       partnerIds = [];
@@ -143,7 +138,6 @@ const broadcastPresence = async (userId, isOnline) => {
         }
       }
 
-      // Cache for 5 minutes
       try {
         await redisSet(cacheKey, JSON.stringify(partnerIds), 300);
       } catch (e) {
@@ -151,7 +145,6 @@ const broadcastPresence = async (userId, isOnline) => {
       }
     }
 
-    // Emit only to chat partners
     for (const partnerId of partnerIds) {
       io.to(`user:${partnerId}`).emit("presence:update", {
         userId,
@@ -163,7 +156,6 @@ const broadcastPresence = async (userId, isOnline) => {
   }
 };
 
-// ✅ NEW: Invalidate partner cache when conversation changes
 export const invalidatePartnerCache = async (userId) => {
   try {
     const { redisDel } = await import("./config/redis.js");
@@ -181,16 +173,19 @@ io.on("connection", (socket) => {
     `✅ Socket connected: ${socket.id} | user: ${userId} | role: ${userRole}`
   );
 
-  // Auto-join room
   const room = `user:${userId}`;
   socket.join(room);
 
-  // Track online (multi-device)
+  // ✅ FIX: Check if this is the FIRST socket for this user
+  const wasOffline = !onlineUsers.has(userId) || onlineUsers.get(userId).size === 0;
+
   if (!onlineUsers.has(userId)) onlineUsers.set(userId, new Set());
   onlineUsers.get(userId).add(socket.id);
 
-  // ✅ Broadcast presence ONLY to relevant users
-  broadcastPresence(userId, true);
+  // ✅ FIX: Only broadcast on transition (offline → online)
+  if (wasOffline) {
+    broadcastPresence(userId, true);
+  }
 
   // ═══════════════════════════════════════════
   // register (legacy)
@@ -205,7 +200,11 @@ io.on("connection", (socket) => {
   // ═══════════════════════════════════════════
   socket.on("presence:get", (data) => {
     const userIds = data?.userIds;
-    if (!Array.isArray(userIds) || userIds.length > 100) return;
+    if (!Array.isArray(userIds) || userIds.length > 100) {
+      return socket.emit("presence:error", {
+        message: "userIds must be array (max 100)",
+      });
+    }
 
     const presenceMap = {};
     for (const id of userIds) {
@@ -298,6 +297,7 @@ io.on("connection", (socket) => {
       sockets.delete(socket.id);
       if (sockets.size === 0) {
         onlineUsers.delete(userId);
+        // ✅ Broadcast only on last socket close
         broadcastPresence(userId, false);
       }
     }

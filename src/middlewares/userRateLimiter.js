@@ -1,22 +1,26 @@
 // src/middlewares/userRateLimiter.js
-import { redisGet, redisSet } from "../config/redis.js";
+import { redisGet, redisSet, redisIncr } from "../config/redis.js";
 import { logger } from "../utils/logger.js";
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FEATURE B-24: Per-USER rate limiting (Redis-backed)
+// FEATURE B-24: Per-USER rate limiting (Redis-backed)
 // Falls back to in-memory if Redis unavailable
 // ═══════════════════════════════════════════════════════════════
 
 // In-memory fallback store
 const memoryStore = new Map();
 
-// Cleanup expired entries every 5 min
-setInterval(() => {
+// ✅ FIX: cleanup interval with unref() to prevent memory leak
+const cleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [key, value] of memoryStore.entries()) {
     if (value.expiresAt < now) memoryStore.delete(key);
   }
 }, 5 * 60 * 1000);
+
+if (cleanupInterval.unref) cleanupInterval.unref();
+
+export const stopRateLimiterCleanup = () => clearInterval(cleanupInterval);
 
 /**
  * Usage:
@@ -37,14 +41,14 @@ export const userRateLimit = ({ windowMs = 60000, max = 30 } = {}) => {
 
       let count = 0;
 
-      // ── Try Redis first
-      try {
-        const current = await redisGet(key);
-        count = current ? parseInt(current, 10) : 0;
-        count++;
-        await redisSet(key, count.toString(), windowSec);
-      } catch (e) {
-        // Redis unavailable — use in-memory
+      // ── Try Redis first (atomic increment)
+      // ✅ FIX: redisIncr is atomic — no race condition
+      const redisCount = await redisIncr(key, windowSec);
+
+      if (redisCount !== null) {
+        count = redisCount;
+      } else {
+        // Redis unavailable — fallback to in-memory
         const now = Date.now();
         const entry = memoryStore.get(key);
 

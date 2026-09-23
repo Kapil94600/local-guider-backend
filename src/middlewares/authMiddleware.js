@@ -5,10 +5,10 @@ import User from "../database/models/core/User.js";
 import { isUserBlocked } from "../modules/blocks/block.repository.js";
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ BLOCK CACHE — 30s TTL, prevents DB hit on every request
+// BLOCK CACHE — 30s TTL, prevents DB hit on every request
 // ═══════════════════════════════════════════════════════════════
-const blockCache = new Map(); // userId -> { blocked, expiresAt }
-const BLOCK_CACHE_TTL = 30 * 1000; // 30 seconds
+const blockCache = new Map();
+const BLOCK_CACHE_TTL = 30 * 1000;
 
 const getBlockStatus = async (userId) => {
   const now = Date.now();
@@ -23,7 +23,6 @@ const getBlockStatus = async (userId) => {
   return blocked;
 };
 
-// ✅ Export so admin block/unblock can invalidate cache
 export const clearBlockCache = (userId) => {
   if (userId) {
     blockCache.delete(userId);
@@ -32,16 +31,20 @@ export const clearBlockCache = (userId) => {
   }
 };
 
-// Periodic cleanup of expired entries (memory leak prevention)
-setInterval(() => {
+// ✅ FIX: Periodic cleanup with unref() — prevents process hang
+const cleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [key, value] of blockCache.entries()) {
     if (value.expiresAt < now) blockCache.delete(key);
   }
-}, 60 * 1000); // every 60s
+}, 60 * 1000);
+
+if (cleanupInterval.unref) cleanupInterval.unref();
+
+export const stopBlockCacheCleanup = () => clearInterval(cleanupInterval);
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ AUTHENTICATE MIDDLEWARE
+// AUTHENTICATE MIDDLEWARE
 // ═══════════════════════════════════════════════════════════════
 export const authenticate = async (req, res, next) => {
   try {
@@ -56,7 +59,6 @@ export const authenticate = async (req, res, next) => {
 
     const token = authHeader.split(" ")[1];
 
-    // ── Verify JWT ──
     let decoded;
     try {
       decoded = jwt.verify(token, env.JWT_ACCESS_SECRET);
@@ -67,7 +69,6 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
-    // ✅ Sanity: token must have id
     if (!decoded?.id) {
       return res.status(401).json({
         success: false,
@@ -75,9 +76,6 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // ✅ PARALLEL: user fetch + block check (was sequential)
-    // ═══════════════════════════════════════════════════════════
     const [dbUser, blocked] = await Promise.all([
       User.findByPk(decoded.id, {
         attributes: ["id", "role", "isActive", "accountStatus"],
@@ -92,7 +90,6 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
-    // ── Status checks ──
     if (!dbUser.isActive) {
       return res.status(403).json({
         success: false,
@@ -114,7 +111,6 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
-    // ── Admin-block check (cached) ──
     if (blocked) {
       return res.status(403).json({
         success: false,
@@ -122,10 +118,9 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
-    // ✅ Override role from DB (fresh, not from stale token)
     req.user = {
       ...decoded,
-      id: dbUser.id, // ✅ guaranteed
+      id: dbUser.id,
       role: dbUser.role,
     };
 
@@ -140,14 +135,12 @@ export const authenticate = async (req, res, next) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ OPTIONAL AUTH — for public routes that want user context
-// (e.g., reviews, favorites — show user-specific data if logged in)
+// OPTIONAL AUTH
 // ═══════════════════════════════════════════════════════════════
 export const optionalAuthenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
-    // No auth → continue without user
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       req.user = null;
       return next();
@@ -159,7 +152,6 @@ export const optionalAuthenticate = async (req, res, next) => {
     try {
       decoded = jwt.verify(token, env.JWT_ACCESS_SECRET);
     } catch (err) {
-      // Invalid token → continue without user
       req.user = null;
       return next();
     }
@@ -197,7 +189,6 @@ export const optionalAuthenticate = async (req, res, next) => {
 
     next();
   } catch (error) {
-    // Any error → continue without user
     req.user = null;
     next();
   }
