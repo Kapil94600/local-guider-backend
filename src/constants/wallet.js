@@ -1,0 +1,12 @@
+// src/constants/wallet.js
+export const WALLET_TRANSACTION_TYPES = {
+  CREDIT: "CREDIT",
+  DEBIT: "DEBIT",
+  REFUND: "REFUND",
+  COMMISSION: "COMMISSION",
+  BONUS: "BONUS",
+  WITHDRAWAL: "WITHDRAWAL",
+};
+
+export const WALLET_TRANSACTION_VALUES =
+  Object.values(WALLET_TRANSACTION_TYPES);

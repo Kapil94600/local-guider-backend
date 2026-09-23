@@ -1,0 +1,523 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model blocks {
+  id                                String   @id @db.Uuid
+  userId                            String   @db.Uuid
+  blockedUserId                     String   @db.Uuid
+  reason                            String?  @db.VarChar(255)
+  createdAt                         DateTime @db.Timestamptz(6)
+  updatedAt                         DateTime @db.Timestamptz(6)
+  users_blocks_blockedUserIdTousers users    @relation("blocks_blockedUserIdTousers", fields: [blockedUserId], references: [id], onDelete: Cascade)
+  users_blocks_userIdTousers        users    @relation("blocks_userIdTousers", fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model bookings {
+  id                     String                @id @db.Uuid
+  userId                 String                @db.Uuid
+  placeId                String?               @db.Uuid
+  guiderPlanId           String?               @db.Uuid
+  photographerPlanId     String?               @db.Uuid
+  bookingDate            DateTime              @db.Timestamptz(6)
+  totalAmount            Decimal?              @default(0) @db.Decimal(10, 2)
+  status                 enum_bookings_status? @default(PENDING)
+  notes                  String?
+  completionOtp          String?               @db.VarChar(6)
+  completionOtpExpiresAt DateTime?             @db.Timestamptz(6)
+  completionOtpVerified  Boolean?              @default(false)
+  createdAt              DateTime              @db.Timestamptz(6)
+  updatedAt              DateTime              @db.Timestamptz(6)
+  guider_plans           guider_plans?         @relation(fields: [guiderPlanId], references: [id])
+  photographer_plans     photographer_plans?   @relation(fields: [photographerPlanId], references: [id])
+  places                 places?               @relation(fields: [placeId], references: [id])
+  users                  users                 @relation(fields: [userId], references: [id], onDelete: NoAction)
+}
+
+model conversations {
+  id                                        String     @id @db.Uuid
+  participant1Id                            String     @db.Uuid
+  participant2Id                            String     @db.Uuid
+  lastMessage                               String?
+  lastMessageAt                             DateTime?  @db.Timestamptz(6)
+  participant1Role                          String?    @default("USER") @db.VarChar(255)
+  participant2Role                          String?    @default("USER") @db.VarChar(255)
+  bookingId                                 String?    @db.Uuid
+  createdAt                                 DateTime   @db.Timestamptz(6)
+  updatedAt                                 DateTime   @db.Timestamptz(6)
+  users_conversations_participant1IdTousers users      @relation("conversations_participant1IdTousers", fields: [participant1Id], references: [id], onDelete: NoAction)
+  users_conversations_participant2IdTousers users      @relation("conversations_participant2IdTousers", fields: [participant2Id], references: [id], onDelete: NoAction)
+  messages                                  messages[]
+
+  @@unique([participant1Id, participant2Id], map: "unique_conversation_pair")
+  @@index([participant1Id], map: "conversations_participant1_id")
+  @@index([participant2Id], map: "conversations_participant2_id")
+}
+
+model devices {
+  id           String    @id @db.Uuid
+  deviceName   String?   @db.VarChar(255)
+  deviceType   String?   @db.VarChar(255)
+  os           String?   @db.VarChar(255)
+  appVersion   String?   @db.VarChar(255)
+  fcmToken     String?
+  lastActiveAt DateTime? @db.Timestamptz(6)
+  createdAt    DateTime  @db.Timestamptz(6)
+  updatedAt    DateTime  @db.Timestamptz(6)
+  userId       String?   @db.Uuid
+  users        users?    @relation(fields: [userId], references: [id])
+}
+
+model favorites {
+  id          String              @id @db.Uuid
+  userId      String              @db.Uuid
+  type        enum_favorites_type
+  referenceId String              @db.Uuid
+  createdAt   DateTime            @db.Timestamptz(6)
+  updatedAt   DateTime            @db.Timestamptz(6)
+  users       users               @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model guider_plans {
+  id          String     @id @db.Uuid
+  guiderId    String     @db.Uuid
+  placeIds    Json       @default("[]")
+  title       String     @db.VarChar(255)
+  description String?
+  duration    Int?       @default(0)
+  price       Decimal?   @default(0) @db.Decimal(10, 2)
+  isActive    Boolean?   @default(true)
+  createdAt   DateTime   @db.Timestamptz(6)
+  updatedAt   DateTime   @db.Timestamptz(6)
+  bookings    bookings[]
+  guiders     guiders    @relation(fields: [guiderId], references: [id], onDelete: Cascade)
+}
+
+model guiders {
+  id              String         @id @db.Uuid
+  userId          String         @map("user_id") @db.Uuid        // 👈 ye badla
+  placeId         String?        @db.Uuid
+  experience      Int?           @default(0)
+  languages       Json?          @default("[]") @db.Json
+  bio             String?
+  isActive        Boolean?       @default(true)
+  fullName        String?        @db.VarChar(255)
+  companyName     String?        @db.VarChar(255)
+  location        String?        @db.VarChar(255)
+  selfieUrl       String?        @db.VarChar(255)
+  idFrontUrl      String?        @db.VarChar(255)
+  idBackUrl       String?        @db.VarChar(255)
+  profilePhotoUrl String?        @db.VarChar(255)
+  placeIds        Json?          @default("[]")
+  gallery         Json?          @default("[]")
+  createdAt       DateTime       @db.Timestamptz(6)
+  updatedAt       DateTime       @db.Timestamptz(6)
+  guider_plans    guider_plans[]
+  users           users          @relation(fields: [userId], references: [id], onDelete: Cascade, map: "guiders_userId_fkey")   // 👈 [user_id] → [userId]
+}
+
+model id_cards {
+  id           String                @id @db.Uuid
+  userId       String                @db.Uuid
+  role         enum_id_cards_role
+  cardNumber   String?               @unique @db.VarChar(50)
+  fullName     String?               @db.VarChar(255)
+  companyName  String?               @db.VarChar(255)
+  location     String?               @db.VarChar(255)
+  placeIds     Json?                 @default("[]")
+  placeNames   Json?                 @default("[]")
+  profileImage String?
+  qrData       String?
+  issueDate    DateTime?             @db.Date
+  expiryDate   DateTime?             @db.Date
+  status       enum_id_cards_status? @default(ACTIVE)
+  createdAt    DateTime              @db.Timestamptz(6)
+  updatedAt    DateTime              @db.Timestamptz(6)
+  users        users                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model messages {
+  id             String                     @id @db.Uuid
+  conversationId String                     @db.Uuid
+  senderId       String                     @db.Uuid
+  messageType    enum_messages_messageType? @default(TEXT)
+  content        String
+  mediaUrl       String?
+  isRead         Boolean?                   @default(false)
+  readAt         DateTime?                  @db.Timestamptz(6)
+  createdAt      DateTime                   @db.Timestamptz(6)
+  updatedAt      DateTime                   @db.Timestamptz(6)
+  conversations  conversations              @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  users          users                      @relation(fields: [senderId], references: [id], onDelete: NoAction)
+
+  @@index([conversationId], map: "messages_conversation_id")
+  @@index([senderId], map: "messages_sender_id")
+}
+
+model notifications {
+  id        String                      @id @db.Uuid
+  userId    String                      @db.Uuid
+  title     String                      @db.VarChar(255)
+  message   String
+  type      enum_notifications_type?    @default(SYSTEM)
+  data      Json?                       @default("{}") @db.Json
+  isRead    Boolean?                    @default(false)
+  readAt    DateTime?                   @db.Timestamptz(6)
+  channel   enum_notifications_channel? @default(IN_APP)
+  sentAt    DateTime?                   @db.Timestamptz(6)
+  error     String?
+  createdAt DateTime                    @db.Timestamptz(6)
+  updatedAt DateTime                    @db.Timestamptz(6)
+  users     users                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([type], map: "notifications_type")
+  @@index([userId, isRead], map: "notifications_user_id_is_read")
+}
+
+model offers {
+  id                 String    @id @db.Uuid
+  title              String    @db.VarChar(255)
+  description        String?
+  image              String?
+  discountPercentage Int?      @default(0)
+  startDate          DateTime? @db.Timestamptz(6)
+  endDate            DateTime? @db.Timestamptz(6)
+  isActive           Boolean?  @default(true)
+  createdAt          DateTime  @db.Timestamptz(6)
+  updatedAt          DateTime  @db.Timestamptz(6)
+}
+
+model photographer_plans {
+  id             String        @id @db.Uuid
+  photographerId String        @db.Uuid
+  placeIds       Json          @default("[]")
+  title          String        @db.VarChar(255)
+  description    String?
+  photoCount     Int?          @default(10)
+  duration       Int?          @default(60)
+  price          Decimal?      @default(0) @db.Decimal(10, 2)
+  isActive       Boolean?      @default(true)
+  createdAt      DateTime      @db.Timestamptz(6)
+  updatedAt      DateTime      @db.Timestamptz(6)
+  bookings       bookings[]
+  photographers  photographers @relation(fields: [photographerId], references: [id], onDelete: Cascade)
+}
+
+model photographers {
+  id                 String               @id @db.Uuid
+  userId             String               @map("user_id") @db.Uuid        // 👈 ye badla
+  placeId            String?              @db.Uuid
+  experience         Int?                 @default(0)
+  bio                String?
+  isActive           Boolean?             @default(true)
+  fullName           String?              @db.VarChar(255)
+  companyName        String?              @db.VarChar(255)
+  location           String?              @db.VarChar(255)
+  selfieUrl          String?              @db.VarChar(255)
+  idFrontUrl         String?              @db.VarChar(255)
+  idBackUrl          String?              @db.VarChar(255)
+  profilePhotoUrl    String?              @db.VarChar(255)
+  placeIds           Json?                @default("[]")
+  gallery            Json?                @default("[]")
+  createdAt          DateTime             @db.Timestamptz(6)
+  updatedAt          DateTime             @db.Timestamptz(6)
+  photographer_plans photographer_plans[]
+  users              users                @relation(fields: [userId], references: [id], onDelete: Cascade, map: "photographers_userId_fkey")   // 👈 [user_id] → [userId]
+}
+
+model places {
+  id           String     @id @db.Uuid
+  name         String     @db.VarChar(255)
+  description  String?
+  category     String?    @db.VarChar(255)
+  address      String?    @db.VarChar(255)
+  city         String?    @db.VarChar(255)
+  state        String?    @db.VarChar(255)
+  country      String?    @db.VarChar(255)
+  latitude     Float?
+  longitude    Float?
+  image        String?    @db.VarChar(255)
+  gallery      Json?      @default("[]") @db.Json
+  openingTime  String?    @db.VarChar(255)
+  closingTime  String?    @db.VarChar(255)
+  rating       Float?     @default(0)
+  totalReviews Int?       @default(0)
+  isFeatured   Boolean?   @default(false)
+  isActive     Boolean?   @default(true)
+  createdAt    DateTime   @db.Timestamptz(6)
+  updatedAt    DateTime   @db.Timestamptz(6)
+  bookings     bookings[]
+}
+
+model refresh_tokens {
+  id        String   @id @db.Uuid
+  userId    String   @db.Uuid
+  token     String
+  deviceId  String?  @db.Uuid
+  ipAddress String?  @db.VarChar(255)
+  userAgent String?
+  expiresAt DateTime @db.Timestamptz(6)
+  isRevoked Boolean? @default(false)
+  createdAt DateTime @db.Timestamptz(6)
+  updatedAt DateTime @db.Timestamptz(6)
+  users     users    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model reset_tokens {
+  id        String   @id @db.Uuid
+  userId    String   @db.Uuid
+  tokenHash String   @db.VarChar(255)
+  expiresAt DateTime @db.Timestamptz(6)
+  isUsed    Boolean? @default(false)
+  createdAt DateTime @db.Timestamptz(6)
+  updatedAt DateTime @db.Timestamptz(6)
+  users     users    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model reviews {
+  id             String   @id @db.Uuid
+  userId         String   @db.Uuid
+  guiderId       String?  @db.Uuid
+  photographerId String?  @db.Uuid
+  rating         Int
+  comment        String?
+  images         Json?    @default("[]") @db.Json
+  isActive       Boolean? @default(true)
+  createdAt      DateTime @db.Timestamptz(6)
+  updatedAt      DateTime @db.Timestamptz(6)
+  users          users    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model role_requests {
+  id              String                           @id @db.Uuid
+  userId          String                           @db.Uuid
+  requestedRole   enum_role_requests_requestedRole
+  message         String?
+  status          enum_role_requests_status        @default(PENDING)
+  adminMessage    String?
+  fullName        String?                          @db.VarChar(255)
+  companyName     String?                          @db.VarChar(255)
+  location        String?                          @db.VarChar(255)
+  selfieUrl       String?                          @db.VarChar(255)
+  idFrontUrl      String?                          @db.VarChar(255)
+  idBackUrl       String?                          @db.VarChar(255)
+  profilePhotoUrl String?                          @db.VarChar(255)
+  placeIds        Json?                            @default("[]") @db.Json
+  createdAt       DateTime                         @db.Timestamptz(6)
+  updatedAt       DateTime                         @db.Timestamptz(6)
+  idType          enum_role_requests_idType?       @default(AADHAAR)
+  users           users                            @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model sliders {
+  id          String                 @id @db.Uuid
+  title       String                 @db.VarChar(150)
+  description String?                @db.VarChar(500)
+  image       String
+  linkType    enum_sliders_linkType? @default(NONE)
+  linkId      String?                @db.Uuid
+  order       Int?                   @default(0)
+  isActive    Boolean?               @default(true)
+  createdAt   DateTime               @db.Timestamptz(6)
+  updatedAt   DateTime               @db.Timestamptz(6)
+}
+
+model users {
+  id                                                String                    @id @db.Uuid
+  firstName                                         String                    @db.VarChar(100)
+  lastName                                          String?                   @db.VarChar(100)
+  email                                             String                    @unique(map: "users_email") @db.VarChar(255)
+  phone                                             String?                   @unique(map: "users_phone") @db.VarChar(20)
+  passwordHash                                      String?                   @db.VarChar(255)
+  role                                              enum_users_role?          @default(USER)
+  profileImage                                      String?
+  gender                                            String?                   @db.VarChar(20)
+  dob                                               DateTime?                 @db.Date
+  country                                           String?                   @db.VarChar(255)
+  state                                             String?                   @db.VarChar(255)
+  city                                              String?                   @db.VarChar(255)
+  language                                          String?                   @default("en") @db.VarChar(255)
+  timezone                                          String?                   @default("Asia/Kolkata") @db.VarChar(255)
+  isVerified                                        Boolean?                  @default(false)
+  isActive                                          Boolean?                  @default(true)
+  emailVerifiedAt                                   DateTime?                 @db.Timestamptz(6)
+  phoneVerifiedAt                                   DateTime?                 @db.Timestamptz(6)
+  accountStatus                                     enum_users_accountStatus? @default(PENDING)
+  lastLoginAt                                       DateTime?                 @db.Timestamptz(6)
+  createdAt                                         DateTime                  @db.Timestamptz(6)
+  updatedAt                                         DateTime                  @db.Timestamptz(6)
+  blocks_blocks_blockedUserIdTousers                blocks[]                  @relation("blocks_blockedUserIdTousers")
+  blocks_blocks_userIdTousers                       blocks[]                  @relation("blocks_userIdTousers")
+  bookings                                          bookings[]
+  conversations_conversations_participant1IdTousers conversations[]           @relation("conversations_participant1IdTousers")
+  conversations_conversations_participant2IdTousers conversations[]           @relation("conversations_participant2IdTousers")
+  devices                                           devices[]
+  favorites                                         favorites[]
+  guiders                                           guiders[]
+  id_cards                                          id_cards[]
+  messages                                          messages[]
+  notifications                                     notifications[]
+  photographers                                     photographers[]
+  refresh_tokens                                    refresh_tokens[]
+  reset_tokens                                      reset_tokens[]
+  reviews                                           reviews[]
+  role_requests                                     role_requests[]
+  wallets                                           wallets?
+  withdrawal_requests                               withdrawal_requests[]
+
+  @@index([accountStatus], map: "users_account_status")
+  @@index([role], map: "users_role")
+}
+
+model wallet_transactions {
+  id              String                                   @id @db.Uuid
+  walletId        String                                   @db.Uuid
+  transactionType enum_wallet_transactions_transactionType
+  amount          Decimal                                  @db.Decimal(12, 2)
+  balanceAfter    Decimal?                                 @db.Decimal(12, 2)
+  referenceId     String?                                  @db.VarChar(255)
+  description     String?
+  createdAt       DateTime                                 @db.Timestamptz(6)
+  updatedAt       DateTime                                 @db.Timestamptz(6)
+  wallets         wallets                                  @relation(fields: [walletId], references: [id], onDelete: Cascade)
+}
+
+model wallets {
+  id                  String                @id @db.Uuid
+  userId              String                @unique @db.Uuid
+  balance             Decimal?              @default(0) @db.Decimal(12, 2)
+  currency            String?               @default("INR") @db.VarChar(10)
+  status              String?               @default("ACTIVE") @db.VarChar(255)
+  createdAt           DateTime              @db.Timestamptz(6)
+  updatedAt           DateTime              @db.Timestamptz(6)
+  wallet_transactions wallet_transactions[]
+  users               users                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model withdrawal_requests {
+  id            String                           @id @db.Uuid
+  userId        String                           @db.Uuid
+  amount        Decimal                          @db.Decimal(12, 2)
+  accountName   String                           @db.VarChar(255)
+  accountNumber String                           @db.VarChar(30)
+  bankName      String                           @db.VarChar(255)
+  ifscCode      String                           @db.VarChar(20)
+  upiId         String?                          @db.VarChar(100)
+  status        enum_withdrawal_requests_status? @default(PENDING)
+  adminMessage  String?
+  processedAt   DateTime?                        @db.Timestamptz(6)
+  createdAt     DateTime                         @db.Timestamptz(6)
+  updatedAt     DateTime                         @db.Timestamptz(6)
+  users         users                            @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum enum_bookings_status {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+  CANCELLED
+}
+
+enum enum_favorites_type {
+  PLACE
+  GUIDER
+  PHOTOGRAPHER
+}
+
+enum enum_id_cards_role {
+  GUIDER
+  PHOTOGRAPHER
+}
+
+enum enum_id_cards_status {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum enum_messages_messageType {
+  TEXT
+  IMAGE
+  FILE
+  LOCATION
+}
+
+enum enum_notifications_channel {
+  IN_APP
+  EMAIL
+  SMS
+  PUSH
+}
+
+enum enum_notifications_type {
+  BOOKING
+  PAYMENT
+  SYSTEM
+  OFFER
+  ROLE_REQUEST
+  CHAT
+  WITHDRAWAL
+}
+
+enum enum_role_requests_idType {
+  AADHAAR
+  PAN
+  DRIVING_LICENSE
+  VOTER_ID
+  PASSPORT
+  OTHER
+}
+
+enum enum_role_requests_requestedRole {
+  GUIDER
+  PHOTOGRAPHER
+}
+
+enum enum_role_requests_status {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum enum_sliders_linkType {
+  PLACE
+  GUIDER
+  PHOTOGRAPHER
+  URL
+  NONE
+}
+
+enum enum_users_accountStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  BLOCKED
+}
+
+enum enum_users_role {
+  ADMIN
+  USER
+  GUIDER
+  PHOTOGRAPHER
+}
+
+enum enum_wallet_transactions_transactionType {
+  CREDIT
+  DEBIT
+  REFUND
+  COMMISSION
+  BONUS
+  WITHDRAWAL
+}
+
+enum enum_withdrawal_requests_status {
+  PENDING
+  APPROVED
+  REJECTED
+}

@@ -1,0 +1,51 @@
+# ═══════════════════════════════════════════
+# Environment & Secrets — NEVER COMMIT
+# ═══════════════════════════════════════════
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Firebase
+firebase-service-account.json
+firebase-env-line.txt
+*-firebase-adminsdk-*.json
+google-services.json
+
+# Logs
+logs/
+*.log
+*-audit.json
+
+# Uploads
+uploads/
+uploads-migration-map.json
+
+# Node modules
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backups
+src.backup-*/
+*.backup
+
+# Uploads backup (temp folders)
+uploads-backup-*/
+
+# models/scripts/
+models/scripts/
+
+# Sequelize CLI legacy (not used)
+models/
+# Firebase secrets
+firebase-service-account.json
+firebase-env-line.txt
+*-firebase-adminsdk-*.json
