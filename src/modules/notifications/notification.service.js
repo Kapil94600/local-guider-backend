@@ -1,4 +1,7 @@
 // src/modules/notifications/notification.service.js
+// ═══════════════════════════════════════════════════════════════
+// NOTIFICATION SERVICE — with debug logs
+// ═══════════════════════════════════════════════════════════════
 import {
   createNotification,
   getNotificationsByUser,
@@ -13,10 +16,11 @@ import { sendEmail } from "../../utils/emailService.js";
 import { sendSms } from "../../utils/smsService.js";
 import { sendPushNotification } from "./push.service.js";
 import { getEmailTemplate } from "../../utils/emailTemplates.js";
+import { logger } from "../../utils/logger.js";
 
-// ═══════════════════════════════════════════
-// Determine primary channel from channels array
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// Determine primary channel
+// ═══════════════════════════════════════════════════════════════
 const determinePrimaryChannel = (channels = []) => {
   if (channels.includes("IN_APP")) return "IN_APP";
   if (channels.includes("PUSH")) return "PUSH";
@@ -38,45 +42,90 @@ export const addNotification = async ({
   email = null,
   phone = null,
 }) => {
-  const primaryChannel = determinePrimaryChannel(channels);
+  try {
+    // ✅ Debug log
+    console.log("═══════════════════════════════════════════");
+    console.log("📝 addNotification CALLED");
+    console.log("   → userId:", userId);
+    console.log("   → title:", title);
+    console.log("   → type:", type);
+    console.log("   → channels:", JSON.stringify(channels));
+    console.log("   → email:", email || "none");
+    console.log("   → phone:", phone || "none");
 
-  // 1️⃣ Save to DB (IN_APP always)
-  const notification = await createNotification({
-    userId,
-    title,
-    message,
-    type,
-    data,
-    isRead: false,
-    channel: primaryChannel,
-    sentAt: new Date(),
-  });
+    const primaryChannel = determinePrimaryChannel(channels);
 
-  // 2️⃣ Push (async — fire & forget)
-  if (channels.includes("PUSH")) {
-    sendPushNotification(userId, title, message, data).catch((err) => {
-      console.error("Push notification failed:", err.message);
+    // ─────────────────────────────────────────────
+    // 1️⃣ Save to DB (IN_APP always)
+    // ─────────────────────────────────────────────
+    const notification = await createNotification({
+      userId,
+      title,
+      message,
+      type,
+      data,
+      isRead: false,
+      channel: primaryChannel,
+      sentAt: new Date(),
     });
-  }
 
-  // 3️⃣ Email (async — non-fatal)
-  if (channels.includes("EMAIL") && email) {
-    const emailTemplate = getEmailTemplate(type, title, message, data);
-    sendEmail({ to: email, subject: title, html: emailTemplate }).catch(
-      (err) => {
-        console.error("Email send failed:", err.message);
-      }
-    );
-  }
+    console.log("✅ Notification saved to DB:", notification.id);
 
-  // 4️⃣ SMS (async — non-fatal)
-  if (channels.includes("SMS") && phone) {
-    sendSms({ to: phone, body: message }).catch((err) => {
-      console.error("SMS send failed:", err.message);
-    });
-  }
+    // ─────────────────────────────────────────────
+    // 2️⃣ Push notification (fire & forget)
+    // ─────────────────────────────────────────────
+    if (channels.includes("PUSH")) {
+      console.log("📤 Calling sendPushNotification...");
+      sendPushNotification(userId, title, message, data)
+        .then((res) => {
+          console.log(
+            "📤 Push result:",
+            JSON.stringify(res, null, 2)
+          );
+        })
+        .catch((err) => {
+          console.error("❌ Push notification failed:", err.message);
+        });
+    } else {
+      console.log("⚠️ PUSH not in channels — skipping push");
+    }
 
-  return notification;
+    // ─────────────────────────────────────────────
+    // 3️⃣ Email (async — non-fatal)
+    // ─────────────────────────────────────────────
+    if (channels.includes("EMAIL") && email) {
+      console.log("📧 Sending email to:", email);
+      const emailTemplate = getEmailTemplate(type, title, message, data);
+      sendEmail({ to: email, subject: title, html: emailTemplate })
+        .then(() => {
+          console.log("✅ Email sent to:", email);
+        })
+        .catch((err) => {
+          console.error("❌ Email send failed:", err.message);
+        });
+    }
+
+    // ─────────────────────────────────────────────
+    // 4️⃣ SMS (async — non-fatal)
+    // ─────────────────────────────────────────────
+    if (channels.includes("SMS") && phone) {
+      console.log("📱 Sending SMS to:", phone);
+      sendSms({ to: phone, body: message })
+        .then(() => {
+          console.log("✅ SMS sent");
+        })
+        .catch((err) => {
+          console.error("❌ SMS send failed:", err.message);
+        });
+    }
+
+    console.log("═══════════════════════════════════════════");
+
+    return notification;
+  } catch (error) {
+    console.error("❌ addNotification ERROR:", error);
+    throw error;
+  }
 };
 
 // ═══════════════════════════════════════════════════════════════
