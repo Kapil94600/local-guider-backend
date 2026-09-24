@@ -22,10 +22,13 @@ import {
 import { sendEmail } from "../../utils/emailService.js";
 import { env } from "../../config/env.js";
 import { logger } from "../../utils/logger.js";
+import {
+  redisGet,
+  redisSet,
+  redisDel,
+} from "../../config/redis.js";
 
-// ═══════════════════════════════════════════
-// ⚡ CACHE — Firebase auth instance
-// ═══════════════════════════════════════════
+// Firebase auth instance cache
 let firebaseAuth = null;
 const getFirebaseAuth = () => {
   if (!firebaseAuth) firebaseAuth = admin.auth();
@@ -33,18 +36,49 @@ const getFirebaseAuth = () => {
 };
 
 // ═══════════════════════════════════════════
-// ⚡ CONSTANTS
+// CONSTANTS
 // ═══════════════════════════════════════════
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const BCRYPT_ROUNDS = 10;
 const OTP_TTL_MS = 5 * 60 * 1000;
+const OTP_TTL_SEC = 5 * 60;
 const RESET_TOKEN_TTL_MS = 15 * 60 * 1000;
 
-// In-memory OTP store (dev/testing)
+// ═══════════════════════════════════════════
+// ✅ In-memory fallback (only if Redis down)
+// ═══════════════════════════════════════════
 const otpStore = new Map();
 
+const otpSet = async (phone, record) => {
+  const key = `otp:${phone}`;
+  const stored = await redisSet(key, JSON.stringify(record), OTP_TTL_SEC);
+  if (!stored) {
+    // Redis unavailable — memory fallback
+    otpStore.set(phone, record);
+  }
+};
+
+const otpGet = async (phone) => {
+  const key = `otp:${phone}`;
+  const cached = await redisGet(key);
+  if (cached) {
+    try {
+      return JSON.parse(cached);
+    } catch {
+      return null;
+    }
+  }
+  return otpStore.get(phone) || null;
+};
+
+const otpDel = async (phone) => {
+  const key = `otp:${phone}`;
+  await redisDel(key);
+  otpStore.delete(phone);
+};
+
 // ═══════════════════════════════════════════
-// ✅ HELPER: Strip sensitive fields from user
+// SENSITIVE FIELDS
 // ═══════════════════════════════════════════
 const SENSITIVE_FIELDS = [
   "passwordHash",
@@ -63,7 +97,7 @@ const sanitizeUser = (user) => {
 };
 
 // ═══════════════════════════════════════════
-// ⚡ HELPERS
+// HELPERS
 // ═══════════════════════════════════════════
 const generateTokensForUser = (user) => ({
   accessToken: generateAccessToken(user),
@@ -81,7 +115,7 @@ const saveRefreshTokenInBackground = (userId, refreshToken) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Register — race-safe
+// REGISTER
 // ═══════════════════════════════════════════
 export const registerUser = async (payload) => {
   const [existingUser, hashedPassword] = await Promise.all([
@@ -102,22 +136,18 @@ export const registerUser = async (payload) => {
       role: "USER",
     });
   } catch (err) {
-    // ✅ FIX: Unique constraint error → race condition
     if (err.name === "SequelizeUniqueConstraintError") {
       throw new Error("User already exists");
     }
     throw err;
   }
 
-  // ✅ FIX: Wallet creation awaited (not fire-and-forget)
   try {
     await createWallet(user.id);
   } catch (walletErr) {
     logger.error(
       `❌ Wallet creation failed for user ${user.id}: ${walletErr.message}`
     );
-    // Wallet is critical — throw to fail registration
-    // (User can retry; prevents inconsistent state)
     throw new Error("Account setup failed. Please try again.");
   }
 
@@ -128,7 +158,7 @@ export const registerUser = async (payload) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Login
+// LOGIN
 // ═══════════════════════════════════════════
 export const loginUser = async (email, password) => {
   const user = await findUserByEmail(email);
@@ -146,15 +176,15 @@ export const loginUser = async (email, password) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Send OTP — DEV MODE
+// SEND OTP (DEV)
 // ═══════════════════════════════════════════
 export const sendOtpService = async (phone) => {
   if (!phone) throw new Error("Phone number is required");
 
   const cleanPhone = phone.trim();
-  const otp = crypto.randomInt(100000, 1000000).toString(); // ✅ crypto-secure
+  const otp = crypto.randomInt(100000, 1000000).toString();
 
-  otpStore.set(cleanPhone, {
+  await otpSet(cleanPhone, {
     otp,
     expiresAt: Date.now() + OTP_TTL_MS,
     attempts: 0,
@@ -174,7 +204,7 @@ export const sendOtpService = async (phone) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Verify OTP — DEV MODE (race-safe)
+// VERIFY OTP
 // ═══════════════════════════════════════════
 export const verifyOtpService = async (phone, otp) => {
   if (!phone) throw new Error("Phone number is required");
@@ -183,28 +213,31 @@ export const verifyOtpService = async (phone, otp) => {
   const cleanPhone = phone.trim();
   const cleanOtp = otp.trim();
 
-  const record = otpStore.get(cleanPhone);
+  const record = await otpGet(cleanPhone);
   if (!record) throw new Error("OTP not found. Please request new OTP.");
 
   if (Date.now() > record.expiresAt) {
-    otpStore.delete(cleanPhone);
+    await otpDel(cleanPhone);
     throw new Error("OTP expired. Please request new OTP.");
   }
 
   record.attempts = (record.attempts || 0) + 1;
   if (record.attempts > 5) {
-    otpStore.delete(cleanPhone);
+    await otpDel(cleanPhone);
     throw new Error("Too many attempts. Request new OTP.");
   }
 
-  if (record.otp !== cleanOtp) throw new Error("Invalid OTP");
+  if (record.otp !== cleanOtp) {
+    // Save updated attempts
+    await otpSet(cleanPhone, record);
+    throw new Error("Invalid OTP");
+  }
 
-  otpStore.delete(cleanPhone);
+  await otpDel(cleanPhone);
 
   let user = await findUserByPhone(cleanPhone);
 
   if (!user) {
-    // ✅ FIX: Handle race condition
     try {
       user = await createUser({
         firstName: "User",
@@ -218,17 +251,16 @@ export const verifyOtpService = async (phone, otp) => {
         accountStatus: "ACTIVE",
         phoneVerifiedAt: new Date(),
       });
+      user.wasNew = true;
     } catch (err) {
       if (err.name === "SequelizeUniqueConstraintError") {
-        // Race: another request created user — refetch
         user = await findUserByPhone(cleanPhone);
-        if (!user) throw err; // Still broken
+        if (!user) throw err;
       } else {
         throw err;
       }
     }
 
-    // ✅ Wallet awaited
     if (user.wasNew) {
       try {
         await createWallet(user.id);
@@ -251,7 +283,7 @@ export const verifyOtpService = async (phone, otp) => {
 };
 
 // ═══════════════════════════════════════════
-// 🔥 Firebase Phone Auth (race-safe)
+// FIREBASE PHONE AUTH
 // ═══════════════════════════════════════════
 export const verifyFirebaseTokenService = async (idToken) => {
   if (!idToken) throw new Error("ID token is required");
@@ -304,7 +336,7 @@ export const verifyFirebaseTokenService = async (idToken) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Refresh Token
+// REFRESH TOKEN
 // ═══════════════════════════════════════════
 export const refreshUserToken = async (refreshToken) => {
   const [storedToken, decoded] = await Promise.all([
@@ -322,16 +354,28 @@ export const refreshUserToken = async (refreshToken) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Logout
+// LOGOUT
 // ═══════════════════════════════════════════
-export const logoutUser = async (refreshToken) => {
+// ═══════════════════════════════════════════
+// LOGOUT
+// ✅ FIX: Verify token ownership
+// ═══════════════════════════════════════════
+export const logoutUser = async (refreshToken, userId = null) => {
   if (!refreshToken) throw new Error("Refresh token is required");
+
+  const storedToken = await getRefreshToken(refreshToken);
+
+  // ✅ If userId provided, verify ownership
+  if (userId && storedToken && storedToken.userId !== userId) {
+    throw new Error("Unauthorized to revoke this token");
+  }
+
   await revokeRefreshToken(refreshToken);
   return { message: "Logout successful" };
 };
 
 // ═══════════════════════════════════════════
-// ✅ Google Login (race-safe)
+// GOOGLE LOGIN
 // ═══════════════════════════════════════════
 export const googleLoginService = async (payload) => {
   const { googleId, email, firstName, lastName, profileImage } = payload;
@@ -361,7 +405,6 @@ export const googleLoginService = async (payload) => {
       user.wasNew = true;
     } catch (err) {
       if (err.name === "SequelizeUniqueConstraintError") {
-        // Race: refetch
         user =
           (await findUserByGoogleId(googleId)) ||
           (await findUserByEmail(email));
@@ -389,7 +432,7 @@ export const googleLoginService = async (payload) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Forgot Password — timing-attack safe
+// FORGOT PASSWORD
 // ═══════════════════════════════════════════
 export const forgotPasswordService = async (email) => {
   const user = await findUserByEmail(email);
@@ -430,7 +473,7 @@ export const forgotPasswordService = async (email) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ Reset Password
+// RESET PASSWORD
 // ═══════════════════════════════════════════
 export const resetPasswordService = async (token, newPassword) => {
   const tokenHash = crypto.createHash("sha256").update(token).digest("hex");

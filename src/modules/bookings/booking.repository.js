@@ -10,14 +10,19 @@ import Photographer from "../../database/models/core/Photographer.js";
 import User from "../../database/models/core/User.js";
 
 // ═══════════════════════════════════════════════════════════════
-// INCLUDE OPTIONS
+// ✅ UPDATED: includeOptions — `as: "user"` explicit
 // ═══════════════════════════════════════════════════════════════
 const includeOptions = [
   {
     model: User,
+    as: "user",  // ✅ explicit alias
     attributes: ["id", "firstName", "lastName", "phone", "email"],
   },
-  { model: Place, as: "place", attributes: ["id", "name", "city"] },
+  {
+    model: Place,
+    as: "place",
+    attributes: ["id", "name", "city"],
+  },
   {
     model: GuiderPlan,
     as: "guiderPlan",
@@ -28,6 +33,7 @@ const includeOptions = [
         include: [
           {
             model: User,
+            as: "user",  // ✅ explicit
             attributes: ["id", "firstName", "lastName", "phone", "email"],
           },
         ],
@@ -46,6 +52,7 @@ const includeOptions = [
         include: [
           {
             model: User,
+            as: "user",  // ✅ explicit
             attributes: ["id", "firstName", "lastName", "phone", "email"],
           },
         ],
@@ -112,14 +119,11 @@ export const getBookings = async ({
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FIX B-8: GET BOOKING BY ID
-// - If transaction (lock): fetch WITHOUT include, then separately fetch user
-// - If no transaction: safe include
+// GET BOOKING BY ID
 // ═══════════════════════════════════════════════════════════════
 export const getBookingById = async (id, options = {}) => {
   const { transaction } = options;
 
-  // ✅ LOCK MODE: no include (avoids PG "FOR UPDATE with outer join" error)
   if (transaction) {
     const booking = await Booking.findByPk(id, {
       transaction,
@@ -127,7 +131,6 @@ export const getBookingById = async (id, options = {}) => {
     });
     if (!booking) return null;
 
-    // ✅ Fetch related data separately (no lock)
     const fullBooking = await Booking.findByPk(id, {
       include: includeOptions,
     });
@@ -135,7 +138,6 @@ export const getBookingById = async (id, options = {}) => {
     return fullBooking;
   }
 
-  // ✅ NO LOCK: safe include
   return await Booking.findByPk(id, {
     include: includeOptions,
   });
@@ -193,7 +195,7 @@ export const saveCompletionOtp = async (id, otp, expiresAt) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// HELPER: Provider bookings (conflict check)
+// HELPER: Provider bookings
 // ═══════════════════════════════════════════════════════════════
 export const getProviderBookings = async (
   planIds,

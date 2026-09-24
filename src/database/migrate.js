@@ -1,13 +1,7 @@
 // src/database/migrate.js
-// ═══════════════════════════════════════════════════════════════
-// CUSTOM MIGRATION RUNNER
-// Run all migration files in src/database/migrations/
-// Each migration file exports: { up(queryInterface), down(queryInterface) }
-// ✅ Windows-compatible using pathToFileURL
-// ═══════════════════════════════════════════════════════════════
 import fs from "fs";
 import path from "path";
-import { fileURLToPath, pathToFileURL } from "url";  // ✅ Added pathToFileURL
+import { fileURLToPath, pathToFileURL } from "url";
 import { sequelize } from "../config/database.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -15,9 +9,6 @@ const __dirname = path.dirname(__filename);
 
 const MIGRATIONS_DIR = path.join(__dirname, "migrations");
 
-// ═══════════════════════════════════════════════════════════════
-// Ensure migrations tracking table exists
-// ═══════════════════════════════════════════════════════════════
 const ensureMigrationTable = async () => {
   await sequelize.query(`
     CREATE TABLE IF NOT EXISTS _migrations (
@@ -28,26 +19,17 @@ const ensureMigrationTable = async () => {
   `);
 };
 
-// ═══════════════════════════════════════════════════════════════
-// Get already-applied migrations
-// ═══════════════════════════════════════════════════════════════
 const getAppliedMigrations = async () => {
   const [rows] = await sequelize.query(`SELECT name FROM _migrations`);
   return new Set(rows.map((r) => r.name));
 };
 
-// ═══════════════════════════════════════════════════════════════
-// Mark migration as applied
-// ═══════════════════════════════════════════════════════════════
 const markApplied = async (name) => {
   await sequelize.query(`INSERT INTO _migrations (name) VALUES (:name)`, {
     replacements: { name },
   });
 };
 
-// ═══════════════════════════════════════════════════════════════
-// Run all pending migrations
-// ═══════════════════════════════════════════════════════════════
 export const runMigrations = async () => {
   try {
     await sequelize.authenticate();
@@ -55,7 +37,6 @@ export const runMigrations = async () => {
 
     await ensureMigrationTable();
 
-    // Ensure migrations folder exists
     if (!fs.existsSync(MIGRATIONS_DIR)) {
       fs.mkdirSync(MIGRATIONS_DIR, { recursive: true });
       console.log("📁 Created migrations folder\n");
@@ -64,7 +45,7 @@ export const runMigrations = async () => {
     const files = fs
       .readdirSync(MIGRATIONS_DIR)
       .filter((f) => f.endsWith(".js"))
-      .sort(); // alphabetical order
+      .sort();
 
     if (files.length === 0) {
       console.log("ℹ️  No migrations found in src/database/migrations/");
@@ -90,7 +71,6 @@ export const runMigrations = async () => {
       console.log(`🔄 Running: ${file}`);
 
       try {
-        // ✅ Windows-compatible: Convert path to file:// URL
         const migrationPath = path.join(MIGRATIONS_DIR, file);
         const migrationUrl = pathToFileURL(migrationPath).href;
 
@@ -125,5 +105,11 @@ export const runMigrations = async () => {
   }
 };
 
-// Run directly if this file is executed
-runMigrations();
+// ✅ Only run if this file is executed directly
+const isMain =
+  process.argv[1] &&
+  pathToFileURL(process.argv[1]).href === import.meta.url;
+
+if (isMain) {
+  runMigrations();
+}

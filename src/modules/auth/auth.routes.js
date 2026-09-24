@@ -14,6 +14,8 @@ import {
 } from "./auth.controller.js";
 import { registerValidation, loginValidation } from "./auth.validation.js";
 import { authLimiter } from "../../middlewares/rateLimiter.js";
+import { otpRateLimiter } from "../../middlewares/otpRateLimiter.js"; // ✅ NEW
+import { authenticate } from "../../middlewares/authMiddleware.js";  // ✅ NEW
 
 const router = express.Router();
 
@@ -24,9 +26,9 @@ router.post("/register", authLimiter, registerValidation, register);
 router.post("/login", authLimiter, loginValidation, login);
 
 // ═══════════════════════════════════════════
-// DEV OTP (console only — testing)
+// DEV OTP — with per-phone limiter
 // ═══════════════════════════════════════════
-router.post("/send-otp", authLimiter, sendOtp);
+router.post("/send-otp", authLimiter, otpRateLimiter, sendOtp);  // ✅ otpRateLimiter added
 router.post("/verify-otp", authLimiter, verifyOtp);
 
 // ═══════════════════════════════════════════
@@ -35,10 +37,10 @@ router.post("/verify-otp", authLimiter, verifyOtp);
 router.post("/firebase-login", authLimiter, firebaseLogin);
 
 // ═══════════════════════════════════════════
-// ✅ FIX: Add rate limiters to token routes
+// Tokens
 // ═══════════════════════════════════════════
 router.post("/refresh-token", authLimiter, refreshToken);
-router.post("/logout", authLimiter, logout);
+router.post("/logout", authLimiter, authenticate, logout);  // ✅ authenticate added
 
 // ═══════════════════════════════════════════
 // Google
@@ -46,7 +48,7 @@ router.post("/logout", authLimiter, logout);
 router.post("/google-login", authLimiter, googleLogin);
 
 // ═══════════════════════════════════════════
-// ✅ FIX: Password reset with rate limits
+// Password reset
 // ═══════════════════════════════════════════
 router.post("/forgot-password", authLimiter, forgotPassword);
 router.post("/reset-password/:token", authLimiter, resetPassword);

@@ -37,30 +37,21 @@ const isOtherUserAdmin = async (otherUserId) => {
   return user?.role === "ADMIN";
 };
 
-// ═══════════════════════════════════════════════════════════════
-// ✅ FIX B-8 + CACHE: hasApprovedBooking
-// - Now includes PAID and COMPLETED statuses
-// - Redis cached (5 min TTL) to avoid per-message DB hit
-// ═══════════════════════════════════════════════════════════════
 const hasApprovedBooking = async (userId, otherUserId) => {
-  // ✅ Cache key (order-independent)
   const [a, b] = [userId, otherUserId].sort();
   const cacheKey = `chat:approved:${a}:${b}`;
 
-  // ── Try cache ──
   try {
     const cached = await redisGet(cacheKey);
     if (cached !== null && cached !== undefined) {
       return cached === "1";
     }
   } catch (e) {
-    // Redis unavailable — fall through to DB
+    // Redis unavailable
   }
 
-  // ── DB query ──
   const booking = await Booking.findOne({
     where: {
-      // ✅ FIX B-8: Allow APPROVED, PAID, COMPLETED
       status: { [Op.in]: ["APPROVED", "PAID", "COMPLETED"] },
       [Op.or]: [{ userId }, { userId: otherUserId }],
     },
@@ -101,9 +92,9 @@ const hasApprovedBooking = async (userId, otherUserId) => {
   if (booking) {
     const customerId = booking.userId;
     const guiderUserId = booking.guiderPlan?.guider?.userId;
-    const photographerUserId = booking.photographerPlan?.photographer?.userId;
+    const photographerUserId =
+      booking.photographerPlan?.photographer?.userId;
 
-    // Customer ↔ Provider match
     if (
       (customerId === userId &&
         (guiderUserId === otherUserId ||
@@ -115,11 +106,10 @@ const hasApprovedBooking = async (userId, otherUserId) => {
     }
   }
 
-  // ── Save to cache ──
   try {
-    await redisSet(cacheKey, result ? "1" : "0", 300); // 5 min TTL
+    await redisSet(cacheKey, result ? "1" : "0", 300);
   } catch (e) {
-    // Redis unavailable — ignore
+    // ignore
   }
 
   return result;
@@ -148,7 +138,6 @@ export const sendMessage = async (
     }
   }
 
-  // Find or create conversation
   let conversation = await findConversation(senderId, receiverId);
 
   if (!conversation) {
@@ -201,6 +190,7 @@ export const sendMessage = async (
   const receiver = await User.findByPk(receiverId, {
     attributes: ["id", "firstName", "lastName"],
   });
+
   if (receiver) {
     try {
       await addNotification({
@@ -210,7 +200,11 @@ export const sendMessage = async (
           senderUser?.firstName || "User"
         }`,
         type: "CHAT",
-        data: { conversationId: conversation.id },
+        data: {
+          conversationId: conversation.id,
+          senderId,
+        },
+        channels: ["IN_APP", "PUSH"],
       });
     } catch (notifError) {
       logger.error(`Chat notification failed: ${notifError.message}`);
@@ -224,6 +218,31 @@ export const sendMessage = async (
     },
     conversationId: conversation.id,
   };
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: MARK CONVERSATION AS READ
+// ═══════════════════════════════════════════════════════════════
+export const markConversationAsRead = async (conversationId, userId) => {
+  const conversation = await getConversationById(conversationId);
+  if (!conversation) throw new Error("Conversation not found");
+
+  // Verify user is participant
+  if (
+    conversation.participant1Id !== userId &&
+    conversation.participant2Id !== userId
+  ) {
+    throw new Error("Not authorized to mark this conversation as read");
+  }
+
+  const [updated] = await markMessagesAsRead(conversationId, userId);
+
+  const otherUserId =
+    conversation.participant1Id === userId
+      ? conversation.participant2Id
+      : conversation.participant1Id;
+
+  return { updated, otherUserId };
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -381,8 +400,7 @@ export const deleteConversation = async (conversationId) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ UTIL: Invalidate chat cache for a user pair
-// Call this from booking approval or role change
+// UTIL: Invalidate chat cache
 // ═══════════════════════════════════════════════════════════════
 export const invalidateChatCache = async (userId1, userId2) => {
   const [a, b] = [userId1, userId2].sort();
@@ -391,6 +409,6 @@ export const invalidateChatCache = async (userId1, userId2) => {
     const { redisDel } = await import("../../config/redis.js");
     await redisDel(cacheKey);
   } catch (e) {
-    // Redis unavailable — ignore
+    // ignore
   }
 };

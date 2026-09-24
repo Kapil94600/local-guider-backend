@@ -1,12 +1,69 @@
 // src/modules/notifications/push.service.js
 // ═══════════════════════════════════════════════════════════════
-// PUSH SERVICE — Expo Push API with debug logs
+// PUSH SERVICE — Expo Push API with badge + grouping + cleanup
 // ═══════════════════════════════════════════════════════════════
 import { Expo } from "expo-server-sdk";
 import Device from "../../database/models/core/Device.js";
+import Notification from "../../database/models/core/Notification.js";
 import { logger } from "../../utils/logger.js";
 
-const expo = new Expo();
+const expo = new Expo({
+  accessToken: process.env.EXPO_ACCESS_TOKEN || undefined,
+});
+
+// ═══════════════════════════════════════════════════════════════
+// HELPER: Get unread count for badge
+// ═══════════════════════════════════════════════════════════════
+const getUnreadCountForBadge = async (userId) => {
+  try {
+    return await Notification.count({
+      where: { userId, isRead: false },
+    });
+  } catch {
+    return 0;
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// HELPER: Grouping metadata (collapseId + threadId)
+// ═══════════════════════════════════════════════════════════════
+const getGroupingMeta = (type, data = {}) => {
+  const meta = {};
+
+  if (type === "CHAT" && data.conversationId) {
+    meta.collapseId = `chat:${data.conversationId}`;
+    meta.threadId = `chat:${data.conversationId}`;
+  } else if (type === "BOOKING" && data.bookingId) {
+    meta.collapseId = `booking:${data.bookingId}`;
+    meta.threadId = `booking:${data.bookingId}`;
+  } else if (type === "PAYMENT" && data.bookingId) {
+    meta.collapseId = `payment:${data.bookingId}`;
+    meta.threadId = `payment:${data.bookingId}`;
+  } else if (type === "WITHDRAWAL" && data.withdrawalId) {
+    meta.collapseId = `withdrawal:${data.withdrawalId}`;
+  } else if (type === "ROLE_REQUEST") {
+    meta.collapseId = "role_request";
+  }
+
+  return meta;
+};
+
+// ═══════════════════════════════════════════════════════════════
+// HELPER: Resolve channel per type
+// ═══════════════════════════════════════════════════════════════
+const getChannelIdForType = (type) => {
+  switch (type) {
+    case "CHAT":
+      return "chat";
+    case "BOOKING":
+      return "bookings";
+    case "PAYMENT":
+      return "default";
+    case "SYSTEM":
+    default:
+      return "default";
+  }
+};
 
 // ═══════════════════════════════════════════════════════════════
 // SEND PUSH NOTIFICATION
@@ -15,64 +72,65 @@ export const sendPushNotification = async (
   userId,
   title,
   body,
-  data = {}
+  data = {},
+  type = "SYSTEM"
 ) => {
   try {
-    console.log("🔔 sendPushNotification CALLED");
-    console.log("   → userId:", userId);
-    console.log("   → title:", title);
-
-    // ✅ 1. Fetch all devices for user
+    // 1. Fetch all devices for user
     const devices = await Device.findAll({ where: { userId } });
-    console.log("🔍 Devices found:", devices.length);
 
     if (devices.length === 0) {
-      console.log("⚠️ No devices registered for user");
       return { success: true, skipped: true, reason: "no-devices" };
     }
+
+    // 2. Get unread count (for badge)
+    const unreadCount = await getUnreadCountForBadge(userId);
+
+    // 3. Grouping metadata
+    const grouping = getGroupingMeta(type, data);
+
+    // 4. Channel ID per type
+    const channelId = getChannelIdForType(type);
 
     const messages = [];
     const deviceMap = new Map();
 
     for (const device of devices) {
       const token = device.fcmToken;
-      console.log("🔍 Device token:", token ? token.slice(0, 40) : "NULL");
 
       if (!token) {
-        console.log("   ❌ Empty token, skipping");
         continue;
       }
 
       if (!Expo.isExpoPushToken(token)) {
-        console.log("   ❌ Invalid Expo token format, skipping");
+        logger.warn(`Invalid Expo token for device ${device.id}`);
         continue;
       }
 
-      messages.push({
+      const message = {
         to: token,
         sound: "default",
         title,
         body,
-        data,
+        data: { ...data, type },
         priority: "high",
-        channelId: "default",
-        // ✅ Android specific
+        channelId,
+        badge: unreadCount,
         _displayInForeground: true,
-      });
+        ...(grouping.collapseId && { collapseId: grouping.collapseId }),
+        ...(grouping.threadId && { threadId: grouping.threadId }),
+      };
+
+      messages.push(message);
       deviceMap.set(token, device.id);
     }
 
-    console.log("✅ Valid messages to send:", messages.length);
-
     if (messages.length === 0) {
-      console.log("⚠️ No valid tokens — skipping push");
       return { success: true, skipped: true, reason: "no-valid-tokens" };
     }
 
-    // ✅ 2. Send in chunks
+    // 5. Send in chunks
     const chunks = expo.chunkPushNotifications(messages);
-    console.log("📤 Sending in", chunks.length, "chunks");
-
     const tickets = [];
     const invalidTokens = [];
 
@@ -81,45 +139,40 @@ export const sendPushNotification = async (
         const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
         tickets.push(...ticketChunk);
 
-        console.log("📬 Tickets received:", ticketChunk.length);
-
-        // ─── Check each ticket ───
+        // Check each ticket for errors
         for (let i = 0; i < ticketChunk.length; i++) {
           const ticket = ticketChunk[i];
           const msg = chunk[i];
 
           if (ticket.status === "error") {
             const errorCode = ticket.details?.error;
-            console.log(
-              `❌ Ticket error: ${errorCode} — ${ticket.message}`
+            logger.warn(
+              `Push ticket error: ${errorCode} — ${ticket.message}`
             );
 
             if (errorCode === "DeviceNotRegistered") {
               invalidTokens.push(msg.to);
             }
-          } else {
-            console.log(`✅ Ticket OK — id: ${ticket.id}`);
           }
         }
       } catch (error) {
-        console.error("❌ Chunk send error:", error.message);
+        logger.error(`Chunk send error: ${error.message}`);
       }
     }
 
-    // ✅ 3. Cleanup invalid tokens
+    // 6. Cleanup invalid tokens
     if (invalidTokens.length > 0) {
       try {
         await Device.destroy({ where: { fcmToken: invalidTokens } });
-        console.log(`🗑️ Cleaned ${invalidTokens.length} invalid tokens`);
+        logger.info(`🗑️ Cleaned ${invalidTokens.length} invalid tokens`);
       } catch (cleanupError) {
-        console.error("Token cleanup failed:", cleanupError.message);
+        logger.error(`Token cleanup failed: ${cleanupError.message}`);
       }
     }
 
-    console.log("✅ Push complete. Total tickets:", tickets.length);
     return { success: true, tickets, count: messages.length };
   } catch (error) {
-    console.error("❌ Push notification error:", error);
+    logger.error(`❌ Push notification error: ${error.message}`);
     return { success: false, error: error.message };
   }
 };
@@ -127,17 +180,21 @@ export const sendPushNotification = async (
 // ═══════════════════════════════════════════════════════════════
 // SEND PUSH TO MULTIPLE USERS
 // ═══════════════════════════════════════════════════════════════
-export const sendPushToMany = async (userIds, title, body, data = {}) => {
+export const sendPushToMany = async (
+  userIds,
+  title,
+  body,
+  data = {},
+  type = "SYSTEM"
+) => {
   try {
-    console.log("🔔 sendPushToMany CALLED for", userIds.length, "users");
-
     const devices = await Device.findAll({
       where: { userId: userIds },
     });
 
-    console.log("🔍 Total devices found:", devices.length);
-
     const messages = [];
+    const channelId = getChannelIdForType(type);
+
     for (const device of devices) {
       const token = device.fcmToken;
       if (!token || !Expo.isExpoPushToken(token)) continue;
@@ -147,9 +204,9 @@ export const sendPushToMany = async (userIds, title, body, data = {}) => {
         sound: "default",
         title,
         body,
-        data,
+        data: { ...data, type },
         priority: "high",
-        channelId: "default",
+        channelId,
       });
     }
 
@@ -176,7 +233,7 @@ export const sendPushToMany = async (userIds, title, body, data = {}) => {
           }
         }
       } catch (err) {
-        console.error("Chunk error:", err.message);
+        logger.error(`Bulk chunk error: ${err.message}`);
       }
     }
 
@@ -184,10 +241,9 @@ export const sendPushToMany = async (userIds, title, body, data = {}) => {
       await Device.destroy({ where: { fcmToken: invalidTokens } });
     }
 
-    console.log("✅ Bulk push sent:", messages.length);
     return { success: true, tickets, count: messages.length };
   } catch (error) {
-    console.error("❌ sendPushToMany error:", error);
+    logger.error(`❌ sendPushToMany error: ${error.message}`);
     return { success: false, error: error.message };
   }
 };

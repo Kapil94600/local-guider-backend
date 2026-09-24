@@ -1,11 +1,16 @@
 // src/middlewares/uploadMiddleware.js
+// ═══════════════════════════════════════════════════════════════
+// UPLOAD MIDDLEWARE — multer memory storage + filters
+// ═══════════════════════════════════════════════════════════════
 import multer from "multer";
 
-// ✅ Memory storage — file disk pe save nahi hogi, Cloudinary pe direct jayegi
+// ✅ Memory storage — file disk pe nahi, Cloudinary pe direct
 const storage = multer.memoryStorage();
 
-// ✅ File filter — only images
-const fileFilter = (req, file, cb) => {
+// ═══════════════════════════════════════════════════════════════
+// FILTER: Images only
+// ═══════════════════════════════════════════════════════════════
+const imageFilter = (req, file, cb) => {
   if (file.mimetype.startsWith("image/")) {
     cb(null, true);
   } else {
@@ -13,31 +18,100 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// ⚠️ Bumped from 5MB → 10MB (live camera photos are bigger)
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: FILTER: Chat media (image + file + voice)
+// ═══════════════════════════════════════════════════════════════
+const chatMediaFilter = (req, file, cb) => {
+  const allowed = [
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "image/heic",
+    "image/heif",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/plain",
+    "application/zip",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/m4a",
+    "audio/aac",
+    "audio/wav",
+    "audio/3gpp",
+    "video/mp4",
+    "video/quicktime",
+  ];
 
-// ✅ Single file upload (field name: "image")
+  if (allowed.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(
+      new Error(
+        `File type ${file.mimetype} is not allowed for chat media`
+      ),
+      false
+    );
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_CHAT_MEDIA_SIZE = 25 * 1024 * 1024; // 25 MB (voice/video bigger)
+
+// ═══════════════════════════════════════════════════════════════
+// SINGLE IMAGE UPLOAD (field: "image")
+// ═══════════════════════════════════════════════════════════════
 export const upload = multer({
   storage,
-  fileFilter,
-  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: imageFilter,
+  limits: { fileSize: MAX_IMAGE_SIZE },
 });
 
-// ✅ Multiple files upload (field name: "files", max 10)
+// ═══════════════════════════════════════════════════════════════
+// MULTIPLE IMAGE UPLOAD (field: "files", max 10)
+// ═══════════════════════════════════════════════════════════════
 export const uploadMultiple = multer({
   storage,
-  fileFilter,
-  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: imageFilter,
+  limits: { fileSize: MAX_IMAGE_SIZE },
 });
 
-// ✅ Role request — 4 named files (KYC) — used as direct middleware
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: CHAT MEDIA UPLOAD (single file, field: "media")
+// ═══════════════════════════════════════════════════════════════
+export const uploadChatMedia = multer({
+  storage,
+  fileFilter: chatMediaFilter,
+  limits: { fileSize: MAX_CHAT_MEDIA_SIZE },
+});
+
+// ═══════════════════════════════════════════════════════════════
+// ROLE REQUEST — 4 named files (KYC)
+// ═══════════════════════════════════════════════════════════════
 export const uploadRoleRequestFiles = multer({
   storage,
-  fileFilter,
-  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: imageFilter,
+  limits: { fileSize: MAX_IMAGE_SIZE },
 }).fields([
   { name: "profilePhoto", maxCount: 1 },
   { name: "selfie", maxCount: 1 },
   { name: "idFront", maxCount: 1 },
   { name: "idBack", maxCount: 1 },
 ]);
+
+// ═══════════════════════════════════════════════════════════════
+// DEFAULT EXPORT
+// ═══════════════════════════════════════════════════════════════
+export default {
+  upload,
+  uploadMultiple,
+  uploadChatMedia,
+  uploadRoleRequestFiles,
+};

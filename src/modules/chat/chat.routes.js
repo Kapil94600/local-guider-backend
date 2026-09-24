@@ -8,21 +8,20 @@ import {
   getUnreadCountController,
   deleteConversationController,
   getAdminId,
+  sendMediaController,
+  markConversationReadController,
 } from "./chat.controller.js";
 import { authenticate } from "../../middlewares/authMiddleware.js";
 import { authorize } from "../../middlewares/authorizeMiddleware.js";
-import { userRateLimit } from "../../middlewares/userRateLimiter.js";  // ✅ NEW
+import { userRateLimit } from "../../middlewares/userRateLimiter.js";
+import { uploadChatMedia } from "../../middlewares/uploadMiddleware.js";  // ✅ UPDATED
 
 const router = express.Router();
 
-// ═══════════════════════════════════════════════════════════════
-// All chat routes require auth
-// ═══════════════════════════════════════════════════════════════
 router.use(authenticate);
 
 // ═══════════════════════════════════════════════════════════════
 // MESSAGES
-// ✅ Rate limited: 30 messages per minute per user
 // ═══════════════════════════════════════════════════════════════
 router.post(
   "/send",
@@ -30,12 +29,26 @@ router.post(
   sendMessageController
 );
 
+router.post(
+  "/send-media",
+  userRateLimit({ windowMs: 60 * 1000, max: 20 }),
+  uploadChatMedia.single("media"),  // ✅ UPDATED
+  sendMediaController
+);
+
 // ═══════════════════════════════════════════════════════════════
 // CONVERSATIONS
 // ═══════════════════════════════════════════════════════════════
 router.get("/conversations", getMyConversations);
-router.get("/conversations/:conversationId/messages", getConversationMessages);
+router.get(
+  "/conversations/:conversationId/messages",
+  getConversationMessages
+);
 router.post("/conversations/start", startConversationController);
+router.post(
+  "/conversations/:conversationId/read",
+  markConversationReadController
+);
 router.delete(
   "/conversations/:conversationId",
   authorize("ADMIN"),

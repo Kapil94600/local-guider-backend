@@ -7,6 +7,9 @@ import express from "express";
 import authRoutes from "../modules/auth/auth.routes.js";
 import healthRoutes from "./health.route.js";
 
+// ✅ NEW: App info routes
+import appInfoRoutes from "../modules/app/app.routes.js";
+
 // ═══════════════════════════════════════════════════════════════
 // User modules
 // ═══════════════════════════════════════════════════════════════
@@ -42,9 +45,12 @@ import adminNotificationRoutes from "../modules/notifications/adminNotification.
 const router = express.Router();
 
 // ═══════════════════════════════════════════════════════════════
-// HEALTH — no auth, no rate limit
+// HEALTH — no auth
 // ═══════════════════════════════════════════════════════════════
 router.use("/health", healthRoutes);
+
+// ✅ NEW: APP INFO — no auth (mobile needs before login)
+router.use("/app", appInfoRoutes);
 
 // ═══════════════════════════════════════════════════════════════
 // AUTH

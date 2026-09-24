@@ -3,14 +3,10 @@ import { redisGet, redisSet, redisIncr } from "../config/redis.js";
 import { logger } from "../utils/logger.js";
 
 // ═══════════════════════════════════════════════════════════════
-// FEATURE B-24: Per-USER rate limiting (Redis-backed)
-// Falls back to in-memory if Redis unavailable
+// PER-USER RATE LIMITING (Redis-backed with memory fallback)
 // ═══════════════════════════════════════════════════════════════
-
-// In-memory fallback store
 const memoryStore = new Map();
 
-// ✅ FIX: cleanup interval with unref() to prevent memory leak
 const cleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [key, value] of memoryStore.entries()) {
@@ -22,14 +18,9 @@ if (cleanupInterval.unref) cleanupInterval.unref();
 
 export const stopRateLimiterCleanup = () => clearInterval(cleanupInterval);
 
-/**
- * Usage:
- *   router.post('/expensive', authenticate, userRateLimit({ windowMs: 60000, max: 10 }), handler)
- */
 export const userRateLimit = ({ windowMs = 60000, max = 30 } = {}) => {
   return async (req, res, next) => {
     try {
-      // ✅ Fallback to IP if no user
       const identifier = req.user?.id
         ? `user:${req.user.id}`
         : `ip:${req.ip}`;
@@ -41,14 +32,13 @@ export const userRateLimit = ({ windowMs = 60000, max = 30 } = {}) => {
 
       let count = 0;
 
-      // ── Try Redis first (atomic increment)
-      // ✅ FIX: redisIncr is atomic — no race condition
+      // Try Redis first
       const redisCount = await redisIncr(key, windowSec);
 
       if (redisCount !== null) {
         count = redisCount;
       } else {
-        // Redis unavailable — fallback to in-memory
+        // Fallback: in-memory
         const now = Date.now();
         const entry = memoryStore.get(key);
 
@@ -64,7 +54,6 @@ export const userRateLimit = ({ windowMs = 60000, max = 30 } = {}) => {
         }
       }
 
-      // Set headers
       res.set("X-RateLimit-Limit", max.toString());
       res.set("X-RateLimit-Remaining", Math.max(0, max - count).toString());
 
@@ -82,7 +71,6 @@ export const userRateLimit = ({ windowMs = 60000, max = 30 } = {}) => {
 
       next();
     } catch (error) {
-      // ✅ Never block on rate limiter errors
       logger.error(`Rate limiter error: ${error.message}`);
       next();
     }

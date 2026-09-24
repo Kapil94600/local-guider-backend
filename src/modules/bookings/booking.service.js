@@ -1,4 +1,7 @@
 // src/modules/bookings/booking.service.js
+// ═══════════════════════════════════════════════════════════════
+// BOOKING SERVICE — full status flow + OTP + refunds + notifications
+// ═══════════════════════════════════════════════════════════════
 import {
   createBooking,
   getBookings,
@@ -275,6 +278,7 @@ export const addBooking = async (userId, payload) => {
         message: `${customerName} requested a booking (#${bookingIdShort}). Please review and respond.`,
         type: "BOOKING",
         data: { bookingId: booking.id, status: "PENDING" },
+        channels: ["IN_APP", "PUSH"],
       });
     } catch (notifErr) {
       logger.error(`Provider booking notification failed: ${notifErr.message}`);
@@ -289,6 +293,7 @@ export const addBooking = async (userId, payload) => {
       message: `Your booking #${bookingIdShort} has been created. Waiting for provider confirmation.`,
       type: "BOOKING",
       data: { bookingId: booking.id, status: "PENDING" },
+      channels: ["IN_APP", "PUSH"],
     });
   } catch (notifErr) {
     logger.error(`Customer booking notification failed: ${notifErr.message}`);
@@ -309,8 +314,10 @@ export const fetchBooking = async (id) => {
 };
 
 export const fetchMyBookings = async (userId) => getBookingsByUserId(userId);
+
 export const fetchGuiderBookings = async (guiderId) =>
   getBookingsByGuiderId(guiderId);
+
 export const fetchPhotographerBookings = async (photographerId) =>
   getBookingsByPhotographerId(photographerId);
 
@@ -437,7 +444,6 @@ export const changeBookingStatus = async (
 
       if (isPaidBooking) {
         try {
-          // ✅ Pass lockedBooking (with id, userId, totalAmount)
           await refundWalletForBooking(lockedBooking, t);
           await lockedBooking.update(
             { paymentStatus: "REFUNDED" },
@@ -498,6 +504,7 @@ export const changeBookingStatus = async (
         message,
         type: "BOOKING",
         data: { bookingId: booking.id, status },
+        channels: ["IN_APP", "PUSH"],
       });
     } catch (e) {
       logger.error(`Customer notification failed: ${e.message}`);
@@ -535,6 +542,7 @@ export const changeBookingStatus = async (
         message,
         type: "BOOKING",
         data: { bookingId: booking.id, status },
+        channels: ["IN_APP", "PUSH"],
       });
     } catch (e) {
       logger.error(`Provider notification failed: ${e.message}`);
@@ -598,7 +606,8 @@ export const cancelMyBooking = async (userId, bookingId, reason = null) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// REQUEST COMPLETION
+// REQUEST COMPLETION (OTP generation)
+// ✅ FIX: OTP not leaked to push notification
 // ═══════════════════════════════════════════════════════════════
 export const requestCompletion = async (providerId, bookingId, role) => {
   const booking = await getBookingById(bookingId);
@@ -651,7 +660,10 @@ export const requestCompletion = async (providerId, bookingId, role) => {
           8
         )} is being completed. Your OTP is: ${otp}. Share it ONLY with your provider.`,
         type: "BOOKING",
-        data: { bookingId: booking.id, otp },
+        // ✅ FIX: OTP NOT in data (prevents push leak)
+        data: { bookingId: booking.id },
+        // ✅ FIX: Only IN_APP — no PUSH for OTP
+        channels: ["IN_APP"],
       });
     } catch (e) {
       logger.error(`Customer OTP notification failed: ${e.message}`);
@@ -670,6 +682,7 @@ export const requestCompletion = async (providerId, bookingId, role) => {
         )}. Ask them to share it with you.`,
         type: "BOOKING",
         data: { bookingId: booking.id },
+        channels: ["IN_APP", "PUSH"],
       });
     } catch (e) {
       logger.error(`Provider OTP notification failed: ${e.message}`);
@@ -681,6 +694,7 @@ export const requestCompletion = async (providerId, bookingId, role) => {
 
 // ═══════════════════════════════════════════════════════════════
 // VERIFY COMPLETION
+// ✅ FIX: Use `updated` instance, not stale `booking`
 // ═══════════════════════════════════════════════════════════════
 export const verifyCompletion = async (userId, bookingId, otp) => {
   const booking = await getBookingById(bookingId);
@@ -704,6 +718,7 @@ export const verifyCompletion = async (userId, bookingId, otp) => {
     throw new ApiError(400, "Invalid or expired OTP");
   }
 
+  // ✅ FIX: changeBookingStatus returns the updated booking instance
   const updated = await changeBookingStatus(
     bookingId,
     "COMPLETED",
@@ -712,7 +727,8 @@ export const verifyCompletion = async (userId, bookingId, otp) => {
     "PROVIDER"
   );
 
-  await booking.update({
+  // ✅ FIX: Update the returned instance (not the stale `booking`)
+  await updated.update({
     completionOtpVerified: true,
     completionOtp: null,
     completionOtpExpiresAt: null,
@@ -730,6 +746,7 @@ export const verifyCompletion = async (userId, bookingId, otp) => {
         )} has been marked as completed.`,
         type: "BOOKING",
         data: { bookingId: booking.id },
+        channels: ["IN_APP", "PUSH"],
       });
     } catch (e) {
       logger.error(`Customer completion notification failed: ${e.message}`);
@@ -745,6 +762,7 @@ export const verifyCompletion = async (userId, bookingId, otp) => {
         message: `You have completed booking #${booking.id.slice(0, 8)}.`,
         type: "BOOKING",
         data: { bookingId: booking.id },
+        channels: ["IN_APP", "PUSH"],
       });
     } catch (e) {
       logger.error(`Provider completion notification failed: ${e.message}`);

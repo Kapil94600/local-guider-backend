@@ -2,23 +2,13 @@
 import Redis from "ioredis";
 import { env } from "./env.js";
 
-// ═══════════════════════════════════════════════════════════════
-// REDIS CLIENT — Graceful connection
-// Supports: Local, Upstash (TLS), Redis Cloud
-// ═══════════════════════════════════════════════════════════════
-// Ye client try karta hai connect karne ki. Agar fail hota hai,
-// to error log karta hai but crash nahi karta.
-// Redis-dependent features (cache, rate limit) degrade ho jate hain.
-// ═══════════════════════════════════════════════════════════════
-
 let redis = null;
 let isRedisAvailable = false;
 
 const REDIS_HOST = env.REDIS_HOST || "127.0.0.1";
 const REDIS_PORT = parseInt(env.REDIS_PORT, 10) || 6379;
-const REDIS_PASSWORD = env.REDIS_PASSWORD || undefined;  // ✅ NEW
+const REDIS_PASSWORD = env.REDIS_PASSWORD || undefined;
 
-// ✅ Auto-detect TLS for Upstash / Redis Cloud
 const isTLS =
   env.REDIS_TLS === "true" ||
   env.REDIS_TLS === true ||
@@ -30,12 +20,11 @@ try {
     host: REDIS_HOST,
     port: REDIS_PORT,
     password: REDIS_PASSWORD,
-    maxRetriesPerRequest: 1,      // ✅ Fail fast
-    enableOfflineQueue: false,    // ✅ Don't queue when offline
-    lazyConnect: true,            // ✅ Don't auto-connect
-    connectTimeout: 10000,        // ✅ 10s connect timeout
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    lazyConnect: true,
+    connectTimeout: 10000,
     retryStrategy(times) {
-      // ✅ Retry with exponential backoff (never fully give up)
       if (times > 10) {
         if (!isRedisAvailable) {
           console.warn(
@@ -46,20 +35,16 @@ try {
           );
         }
       }
-      return Math.min(times * 200, 5000);  // max 5s
+      return Math.min(times * 200, 5000);
     },
   };
 
-  // ✅ Add TLS for Upstash / Redis Cloud
   if (isTLS) {
-    redisConfig.tls = {
-      rejectUnauthorized: false,  // ✅ Skip cert verify (Upstash uses valid certs but this is safer for proxies)
-    };
+    redisConfig.tls = { rejectUnauthorized: false };
   }
 
   redis = new Redis(redisConfig);
 
-  // ─── Event handlers ───
   redis.on("connect", () => {
     isRedisAvailable = true;
     console.log(`✅ Redis Connected (${isTLS ? "TLS" : "Plain"})`);
@@ -70,26 +55,15 @@ try {
     console.log("✅ Redis Ready");
   });
 
-  redis.on("error", (err) => {
-    // ✅ Only log error ONCE (avoid spam)
-    if (!isRedisAvailable) {
-      isRedisAvailable = false;
-      // Silent — do not spam
-      // Uncomment for debugging:
-      // console.error("Redis error:", err.message);
-    }
+  redis.on("error", () => {
+    if (!isRedisAvailable) isRedisAvailable = false;
   });
 
   redis.on("close", () => {
     isRedisAvailable = false;
   });
 
-  redis.on("reconnecting", () => {
-    // Silent — auto-reconnect
-  });
-
-  // ─── Try to connect ───
-  redis.connect().catch((err) => {
+  redis.connect().catch(() => {
     console.warn(
       `⚠️  Redis unavailable (${REDIS_HOST}:${REDIS_PORT}) — running in degraded mode`
     );
@@ -102,7 +76,7 @@ try {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// HELPER: Safe Redis operations (graceful fallback)
+// SAFE GET
 // ═══════════════════════════════════════════════════════════════
 export const redisGet = async (key) => {
   if (!redis || !isRedisAvailable) return null;
@@ -113,6 +87,9 @@ export const redisGet = async (key) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// SAFE SET
+// ═══════════════════════════════════════════════════════════════
 export const redisSet = async (key, value, expirySeconds = null) => {
   if (!redis || !isRedisAvailable) return false;
   try {
@@ -127,6 +104,9 @@ export const redisSet = async (key, value, expirySeconds = null) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// SAFE DEL
+// ═══════════════════════════════════════════════════════════════
 export const redisDel = async (key) => {
   if (!redis || !isRedisAvailable) return false;
   try {
@@ -137,7 +117,9 @@ export const redisDel = async (key) => {
   }
 };
 
-// ✅ NEW: Atomic increment (for rate limiting)
+// ═══════════════════════════════════════════════════════════════
+// SAFE INCR
+// ═══════════════════════════════════════════════════════════════
 export const redisIncr = async (key, expirySeconds = null) => {
   if (!redis || !isRedisAvailable) return null;
   try {
@@ -151,6 +133,32 @@ export const redisIncr = async (key, expirySeconds = null) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: SAFE EXPIRE
+// ═══════════════════════════════════════════════════════════════
+export const redisExpire = async (key, seconds) => {
+  if (!redis || !isRedisAvailable) return false;
+  try {
+    await redis.expire(key, seconds);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: RAW COMMAND (for rate-limit-redis)
+// ═══════════════════════════════════════════════════════════════
+export const redisCall = async (...args) => {
+  if (!redis || !isRedisAvailable) {
+    throw new Error("Redis not available");
+  }
+  return redis.call(...args);
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: Check availability
+// ═══════════════════════════════════════════════════════════════
 export const isRedisConnected = () => isRedisAvailable;
 
 export default redis;

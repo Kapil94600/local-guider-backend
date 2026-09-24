@@ -1,3 +1,4 @@
+// src/modules/auth/auth.controller.js
 import { ApiResponse } from "../../utils/apiResponse.js";
 import {
   registerUser,
@@ -86,10 +87,14 @@ export const refreshToken = async (req, res, next) => {
 
 // ═══════════════════════════════════════════
 // ✅ Logout
+// ✅ FIX: Pass userId for ownership check
 // ═══════════════════════════════════════════
 export const logout = async (req, res, next) => {
   try {
-    const result = await logoutUser(req.body.refreshToken);
+    const result = await logoutUser(
+      req.body.refreshToken,
+      req.user?.id || null   // ✅ FIX: pass userId
+    );
     return ApiResponse.success(res, result.message, null);
   } catch (error) {
     next(error);

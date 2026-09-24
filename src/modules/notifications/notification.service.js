@@ -1,7 +1,4 @@
 // src/modules/notifications/notification.service.js
-// ═══════════════════════════════════════════════════════════════
-// NOTIFICATION SERVICE — with debug logs
-// ═══════════════════════════════════════════════════════════════
 import {
   createNotification,
   getNotificationsByUser,
@@ -12,6 +9,7 @@ import {
   deleteAllNotifications,
   getUnreadCount,
 } from "./notification.repository.js";
+import User from "../../database/models/core/User.js";
 import { sendEmail } from "../../utils/emailService.js";
 import { sendSms } from "../../utils/smsService.js";
 import { sendPushNotification } from "./push.service.js";
@@ -30,7 +28,7 @@ const determinePrimaryChannel = (channels = []) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ ADD NOTIFICATION — main entry point
+// ADD NOTIFICATION
 // ═══════════════════════════════════════════════════════════════
 export const addNotification = async ({
   userId,
@@ -43,21 +41,9 @@ export const addNotification = async ({
   phone = null,
 }) => {
   try {
-    // ✅ Debug log
-    console.log("═══════════════════════════════════════════");
-    console.log("📝 addNotification CALLED");
-    console.log("   → userId:", userId);
-    console.log("   → title:", title);
-    console.log("   → type:", type);
-    console.log("   → channels:", JSON.stringify(channels));
-    console.log("   → email:", email || "none");
-    console.log("   → phone:", phone || "none");
-
     const primaryChannel = determinePrimaryChannel(channels);
 
-    // ─────────────────────────────────────────────
-    // 1️⃣ Save to DB (IN_APP always)
-    // ─────────────────────────────────────────────
+    // ── 1. Save to DB ──
     const notification = await createNotification({
       userId,
       title,
@@ -69,61 +55,57 @@ export const addNotification = async ({
       sentAt: new Date(),
     });
 
-    console.log("✅ Notification saved to DB:", notification.id);
-
-    // ─────────────────────────────────────────────
-    // 2️⃣ Push notification (fire & forget)
-    // ─────────────────────────────────────────────
+    // ── 2. Push (fire & forget) ──
     if (channels.includes("PUSH")) {
-      console.log("📤 Calling sendPushNotification...");
-      sendPushNotification(userId, title, message, data)
-        .then((res) => {
-          console.log(
-            "📤 Push result:",
-            JSON.stringify(res, null, 2)
-          );
-        })
-        .catch((err) => {
-          console.error("❌ Push notification failed:", err.message);
-        });
-    } else {
-      console.log("⚠️ PUSH not in channels — skipping push");
+      sendPushNotification(userId, title, message, data, type).catch((err) => {
+        logger.error(`Push notification failed: ${err.message}`);
+      });
     }
 
-    // ─────────────────────────────────────────────
-    // 3️⃣ Email (async — non-fatal)
-    // ─────────────────────────────────────────────
-    if (channels.includes("EMAIL") && email) {
-      console.log("📧 Sending email to:", email);
-      const emailTemplate = getEmailTemplate(type, title, message, data);
-      sendEmail({ to: email, subject: title, html: emailTemplate })
-        .then(() => {
-          console.log("✅ Email sent to:", email);
-        })
-        .catch((err) => {
-          console.error("❌ Email send failed:", err.message);
+    // ── 3. Email — auto-fetch if not provided ──
+    if (channels.includes("EMAIL")) {
+      let toEmail = email;
+      if (!toEmail) {
+        try {
+          const u = await User.findByPk(userId, {
+            attributes: ["email"],
+          });
+          toEmail = u?.email;
+        } catch (e) {
+          logger.error(`User email fetch failed: ${e.message}`);
+        }
+      }
+      if (toEmail) {
+        const html = getEmailTemplate(type, title, message, data);
+        sendEmail({ to: toEmail, subject: title, html }).catch((err) => {
+          logger.error(`Email failed: ${err.message}`);
         });
+      }
     }
 
-    // ─────────────────────────────────────────────
-    // 4️⃣ SMS (async — non-fatal)
-    // ─────────────────────────────────────────────
-    if (channels.includes("SMS") && phone) {
-      console.log("📱 Sending SMS to:", phone);
-      sendSms({ to: phone, body: message })
-        .then(() => {
-          console.log("✅ SMS sent");
-        })
-        .catch((err) => {
-          console.error("❌ SMS send failed:", err.message);
+    // ── 4. SMS — auto-fetch if not provided ──
+    if (channels.includes("SMS")) {
+      let toPhone = phone;
+      if (!toPhone) {
+        try {
+          const u = await User.findByPk(userId, {
+            attributes: ["phone"],
+          });
+          toPhone = u?.phone;
+        } catch (e) {
+          logger.error(`User phone fetch failed: ${e.message}`);
+        }
+      }
+      if (toPhone) {
+        sendSms({ to: toPhone, body: message }).catch((err) => {
+          logger.error(`SMS failed: ${err.message}`);
         });
+      }
     }
-
-    console.log("═══════════════════════════════════════════");
 
     return notification;
   } catch (error) {
-    console.error("❌ addNotification ERROR:", error);
+    logger.error(`addNotification ERROR: ${error.message}`);
     throw error;
   }
 };
@@ -138,8 +120,7 @@ export const fetchMyNotifications = async (userId, params = {}) => {
 export const readNotification = async (id, userId) => {
   const [updated] = await markNotificationRead(id, userId);
   if (updated === 0) throw new Error("Notification not found");
-  const notification = await getNotificationById(id);
-  return notification;
+  return await getNotificationById(id);
 };
 
 export const readAllNotifications = async (userId) => {
@@ -150,7 +131,7 @@ export const readAllNotifications = async (userId) => {
 export const removeNotification = async (id, userId) => {
   const deleted = await deleteNotification(id, userId);
   if (deleted === 0) throw new Error("Notification not found");
-  return { message: "Notification deleted successfully" };
+  return { message: "Notification deleted" };
 };
 
 export const removeAllNotifications = async (userId) => {
