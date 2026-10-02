@@ -237,6 +237,7 @@ model places {
   category     String?    @db.VarChar(255)
   address      String?    @db.VarChar(255)
   city         String?    @db.VarChar(255)
+  district     String?    @db.VarChar(255)   // ✅ NEW
   state        String?    @db.VarChar(255)
   country      String?    @db.VarChar(255)
   latitude     Float?
