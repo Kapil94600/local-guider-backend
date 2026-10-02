@@ -1,4 +1,8 @@
 // src/modules/places/place.repository.js
+// ═══════════════════════════════════════════════════════════════
+// PLACE REPOSITORY — District + Distance based sorting
+// Priority: SAME_CITY → NEARBY → SAME_DISTRICT → OTHER
+// ═══════════════════════════════════════════════════════════════
 import { Op, literal } from "sequelize";
 import Place from "../../database/models/core/Place.js";
 
@@ -10,33 +14,7 @@ export const createPlace = async (payload) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// GET ALL PLACES — basic filter (existing)
-// ═══════════════════════════════════════════════════════════════
-export const getAllPlaces = async ({
-  city,
-  category,
-  page = 1,
-  limit = 10,
-  includeInactive = false,
-} = {}) => {
-  const where = {};
-  if (city) where.city = { [Op.iLike]: city };
-  if (category) where.category = category;
-  if (!includeInactive) where.isActive = true;
-
-  const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
-  const safePage = Math.max(parseInt(page) || 1, 1);
-
-  return await Place.findAndCountAll({
-    where,
-    limit: safeLimit,
-    offset: (safePage - 1) * safeLimit,
-    order: [["createdAt", "DESC"]],
-  });
-};
-
-// ═══════════════════════════════════════════════════════════════
-// ✅ NORMALIZE: lowercase + trim for comparison
+// NORMALIZE (lowercase + trim)
 // ═══════════════════════════════════════════════════════════════
 const normalize = (str) => {
   if (!str) return null;
@@ -44,58 +22,108 @@ const normalize = (str) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FUZZY MATCH: "Fatehpur Shekhawati" ↔ "Fatehpur"
-// Checks if one contains the other (bidirectional)
+// CITY MATCH — first word comparison
+// "Fatehpur Shekhawati" ↔ "Fatehpur" → true
+// "Sikar" ↔ "Fatehpur" → false
 // ═══════════════════════════════════════════════════════════════
-const fuzzyMatch = (a, b) => {
-  if (!a || !b) return false;
-  const na = normalize(a);
-  const nb = normalize(b);
-  if (na === nb) return true;
-  return na.includes(nb) || nb.includes(na);
+const cityMatch = (placeCity, userCity) => {
+  if (!placeCity || !userCity) return false;
+  const pc = normalize(placeCity);
+  const uc = normalize(userCity);
+  if (pc === uc) return true;
+
+  // Compare first words (handles "Fatehpur" vs "Fatehpur Shekhawati")
+  const pcFirst = pc.split(/\s+/)[0];
+  const ucFirst = uc.split(/\s+/)[0];
+  return pcFirst === ucFirst;
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ COMPUTE TIER for a single place
-// Priority:
-//   1 = SAME_CITY (exact or fuzzy)
-//   2 = SAME_DISTRICT
-//   3 = NEARBY (within radius)
-//   4 = SAME_STATE
-//   5 = OTHER
+// DISTRICT MATCH — exact comparison
+// "Sikar" ↔ "Sikar" → true
+// "Sikar" ↔ "Jaipur" → false
+// ═══════════════════════════════════════════════════════════════
+const districtMatch = (placeDistrict, userDistrict) => {
+  if (!placeDistrict || !userDistrict) return false;
+  return normalize(placeDistrict) === normalize(userDistrict);
+};
+
+// ═══════════════════════════════════════════════════════════════
+// HAVERSINE DISTANCE (km)
+// ═══════════════════════════════════════════════════════════════
+const haversineDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ COMPUTE TIER — 4 tiers with priority
+//
+// Priority order:
+//   1 = SAME_CITY      → exact city (Fatehpur Shekhawati)
+//   2 = NEARBY         → within 50 km (city match nahi, but distance zyada kam)
+//   3 = SAME_DISTRICT  → same district (Sikar) but > 50km door
+//   4 = OTHER          → baaki sab
+//
+// Note: Agar place same city hai AND nearby hai, toh SAME_CITY priority milegi
 // ═══════════════════════════════════════════════════════════════
 const computeTier = (
   place,
-  { normCity, normDistrict, normState },
+  { normCity, normDistrict },
   distance,
   radius = 50
 ) => {
-  // Tier 1: Same City (fuzzy match — "Fatehpur" == "Fatehpur Shekhawati")
-  if (normCity && fuzzyMatch(place.city, normCity)) {
+  // Tier 1: Same City
+  if (normCity && cityMatch(place.city, normCity)) {
     return "SAME_CITY";
   }
 
-  // Tier 2: Same District (fuzzy match)
-  if (normDistrict && fuzzyMatch(place.district, normDistrict)) {
-    return "SAME_DISTRICT";
-  }
-
-  // Tier 3: Nearby (within radius km)
+  // Tier 2: Nearby (within radius) — city match nahi but distance < 50km
   if (distance != null && distance <= radius) {
     return "NEARBY";
   }
 
-  // Tier 4: Same State
-  if (normState && fuzzyMatch(place.state, normState)) {
-    return "SAME_STATE";
+  // Tier 3: Same District (Sikar) — city match nahi, distance > 50km
+  if (normDistrict && districtMatch(place.district, normDistrict)) {
+    return "SAME_DISTRICT";
   }
 
-  // Tier 5: Other
+  // Tier 4: Other
   return "OTHER";
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ GET NEARBY PLACES — Smart location-based sorting
+// TIER → PRIORITY
+// ═══════════════════════════════════════════════════════════════
+const tierToPriority = (tier) => {
+  switch (tier) {
+    case "SAME_CITY":
+      return 1;
+    case "NEARBY":
+      return 2;
+    case "SAME_DISTRICT":
+      return 3;
+    case "OTHER":
+    default:
+      return 4;
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ GET NEARBY PLACES — City + Distance + District
 // ═══════════════════════════════════════════════════════════════
 export const getNearbyPlaces = async ({
   lat,
@@ -111,125 +139,104 @@ export const getNearbyPlaces = async ({
 
   const normCity = city ? String(city).trim() : null;
   const normDistrict = district ? String(district).trim() : null;
-  const normState = state ? String(state).trim() : null;
 
-  // ═══════════════════════════════════════════════════════════
-  // FALLBACK: If no valid coordinates, use string-based filter
-  // ═══════════════════════════════════════════════════════════
   const latNum = lat != null ? parseFloat(lat) : null;
   const lngNum = lng != null ? parseFloat(lng) : null;
   const hasCoords =
     latNum != null && lngNum != null && !isNaN(latNum) && !isNaN(lngNum);
 
-  if (!hasCoords) {
-    // 🔹 No coordinates → use city/district/state OR conditions
-    const orConditions = [];
-    if (normCity) {
-      orConditions.push({ city: { [Op.iLike]: `%${normCity}%` } });
-    }
-    if (normDistrict) {
-      orConditions.push({ district: { [Op.iLike]: `%${normDistrict}%` } });
-    }
-    if (normState) {
-      orConditions.push({ state: { [Op.iLike]: `%${normState}%` } });
-    }
-
-    const where = { isActive: true };
-    if (orConditions.length > 0) {
-      where[Op.or] = orConditions;
-    }
-
-    const places = await Place.findAll({
-      where,
-      limit: safeLimit,
-      order: [["rating", "DESC"], ["createdAt", "DESC"]],
-    });
-
-    // Assign tiers + sort manually
-    const withTier = places.map((p) => {
-      const tier = computeTier(
-        p.toJSON(),
-        { normCity, normDistrict, normState },
-        null,
-        safeRadius
-      );
-      return {
-        ...p.toJSON(),
-        distance: null,
-        tier,
-        tierPriority: tierToPriority(tier),
-      };
-    });
-
-    // Sort by tier priority, then by rating
-    withTier.sort((a, b) => {
-      if (a.tierPriority !== b.tierPriority) {
-        return a.tierPriority - b.tierPriority;
-      }
-      return (b.rating || 0) - (a.rating || 0);
-    });
-
-    return withTier;
-  }
-
-  // ═══════════════════════════════════════════════════════════
-  // Haversine formula for distance (km)
-  // ═══════════════════════════════════════════════════════════
-  const haversine = `
-    6371 * acos(
-      LEAST(1.0,
-        cos(radians(${latNum})) *
-        cos(radians("latitude")) *
-        cos(radians("longitude") - radians(${lngNum})) +
-        sin(radians(${latNum})) *
-        sin(radians("latitude"))
-      )
-    )
-  `;
-
-  const places = await Place.findAll({
-    where: {
-      isActive: true,
-      latitude: { [Op.ne]: null },
-      longitude: { [Op.ne]: null },
-    },
-    attributes: {
-      include: [[literal(`(${haversine})`), "distance"]],
-    },
-    limit: safeLimit * 2, // Get more for filtering
-    raw: true,
+  console.log("🔍 [getNearbyPlaces] Input:", {
+    city: normCity,
+    district: normDistrict,
+    hasCoords,
+    lat: latNum,
+    lng: lngNum,
+    radius: safeRadius,
   });
 
   // ═══════════════════════════════════════════════════════════
-  // Compute tier + sort
+  // Build DB Query — District + City + State OR filter
+  // (fetch only relevant places, not all 500)
+  // ═══════════════════════════════════════════════════════════
+  const orConditions = [];
+
+  if (normCity) {
+    orConditions.push({ city: { [Op.iLike]: `%${normCity}%` } });
+    // Also match first word — "Fatehpur%" matches "Fatehpur Shekhawati"
+    orConditions.push({
+      city: { [Op.iLike]: `${normCity.split(/\s+/)[0]}%` },
+    });
+  }
+
+  if (normDistrict) {
+    orConditions.push({ district: { [Op.iLike]: `%${normDistrict}%` } });
+  }
+
+  const where = { isActive: true };
+  if (orConditions.length > 0) {
+    where[Op.or] = orConditions;
+  }
+
+  const places = await Place.findAll({
+    where,
+    limit: 500,
+  });
+
+  console.log(`📦 [getNearbyPlaces] Fetched ${places.length} places from DB`);
+
+  // ═══════════════════════════════════════════════════════════
+  // Compute distance + tier for each
   // ═══════════════════════════════════════════════════════════
   const withTier = places.map((p) => {
-    const distance = p.distance != null ? parseFloat(p.distance) : null;
+    const pJson = p.toJSON();
+
+    let distance = null;
+    const pLat = pJson.latitude != null ? parseFloat(pJson.latitude) : null;
+    const pLng = pJson.longitude != null ? parseFloat(pJson.longitude) : null;
+
+    if (hasCoords && pLat != null && pLng != null) {
+      distance = haversineDistance(latNum, lngNum, pLat, pLng);
+    }
+
     const tier = computeTier(
-      p,
-      { normCity, normDistrict, normState },
+      pJson,
+      { normCity, normDistrict },
       distance,
       safeRadius
     );
+
     return {
-      ...p,
+      ...pJson,
       distance,
       tier,
       tierPriority: tierToPriority(tier),
     };
   });
 
-  // Sort by:
-  //   1. Tier priority (SAME_CITY first)
-  //   2. Distance (nearest first)
-  //   3. Rating (highest first)
+  // ═══════════════════════════════════════════════════════════
+  // Group counts (for logging)
+  // ═══════════════════════════════════════════════════════════
+  const counts = {
+    SAME_CITY: withTier.filter((p) => p.tier === "SAME_CITY").length,
+    NEARBY: withTier.filter((p) => p.tier === "NEARBY").length,
+    SAME_DISTRICT: withTier.filter((p) => p.tier === "SAME_DISTRICT").length,
+    OTHER: withTier.filter((p) => p.tier === "OTHER").length,
+  };
+  console.log("🎯 [getNearbyPlaces] Tier counts:", counts);
+
+  // ═══════════════════════════════════════════════════════════
+  // Sort: tier priority → distance → rating
+  // ═══════════════════════════════════════════════════════════
   withTier.sort((a, b) => {
+    // 1. Tier priority
     if (a.tierPriority !== b.tierPriority) {
       return a.tierPriority - b.tierPriority;
     }
+    // 2. Within same tier: nearest first
     const da = a.distance ?? Infinity;
     const db = b.distance ?? Infinity;
     if (da !== db) return da - db;
+    // 3. Then by rating
     return (b.rating || 0) - (a.rating || 0);
   });
 
@@ -237,22 +244,29 @@ export const getNearbyPlaces = async ({
 };
 
 // ═══════════════════════════════════════════════════════════════
-// HELPER: Tier → numeric priority
+// GET ALL PLACES (basic filter)
 // ═══════════════════════════════════════════════════════════════
-const tierToPriority = (tier) => {
-  switch (tier) {
-    case "SAME_CITY":
-      return 1;
-    case "SAME_DISTRICT":
-      return 2;
-    case "NEARBY":
-      return 3;
-    case "SAME_STATE":
-      return 4;
-    case "OTHER":
-    default:
-      return 5;
-  }
+export const getAllPlaces = async ({
+  city,
+  category,
+  page = 1,
+  limit = 10,
+  includeInactive = false,
+} = {}) => {
+  const where = {};
+  if (city) where.city = { [Op.iLike]: `%${city}%` };
+  if (category) where.category = category;
+  if (!includeInactive) where.isActive = true;
+
+  const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+  const safePage = Math.max(parseInt(page) || 1, 1);
+
+  return await Place.findAndCountAll({
+    where,
+    limit: safeLimit,
+    offset: (safePage - 1) * safeLimit,
+    order: [["createdAt", "DESC"]],
+  });
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -276,9 +290,7 @@ export const getFeatured = async () => {
 // SEARCH
 // ═══════════════════════════════════════════════════════════════
 export const searchPlaces = async (q, city) => {
-  if (!q || !q.trim()) {
-    throw new Error("Search query is required");
-  }
+  if (!q || !q.trim()) throw new Error("Search query is required");
 
   const where = {
     isActive: true,
