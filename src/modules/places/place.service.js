@@ -1,8 +1,11 @@
 // src/modules/places/place.service.js
+// ═══════════════════════════════════════════════════════════════
+// PLACE SERVICE — with nearby places
+// ═══════════════════════════════════════════════════════════════
 import {
   createPlace,
   getAllPlaces,
-  getNearbyPlaces,   // ✅ NEW
+  getNearbyPlaces,
   getPlaceById,
   getFeatured,
   searchPlaces,
@@ -13,15 +16,23 @@ import {
   replaceGallery,
 } from "./place.repository.js";
 
+// ═══════════════════════════════════════════════════════════════
+// CREATE
+// ═══════════════════════════════════════════════════════════════
 export const addPlace = async (payload) => {
   return await createPlace(payload);
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GET ALL (basic filter)
+// ═══════════════════════════════════════════════════════════════
 export const fetchPlaces = async ({ city, category, page, limit }) => {
   return await getAllPlaces({ city, category, page, limit });
 };
 
-// ✅ NEW: Fetch nearby places with location-based sorting
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: GET NEARBY PLACES (tier-based sorting)
+// ═══════════════════════════════════════════════════════════════
 export const fetchNearbyPlaces = async ({
   lat,
   lng,
@@ -42,35 +53,50 @@ export const fetchNearbyPlaces = async ({
   });
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GET FEATURED
+// ═══════════════════════════════════════════════════════════════
 export const fetchFeaturedPlaces = async () => {
   return await getFeatured();
 };
 
+// ═══════════════════════════════════════════════════════════════
+// SEARCH
+// ═══════════════════════════════════════════════════════════════
 export const searchPlacesService = async (q, city) => {
   return await searchPlaces(q, city);
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GET BY ID
+// ═══════════════════════════════════════════════════════════════
 export const fetchPlaceById = async (id) => {
   const place = await getPlaceById(id);
   if (!place) throw new Error("Place not found");
   return place;
 };
 
+// ═══════════════════════════════════════════════════════════════
+// UPDATE
+// ═══════════════════════════════════════════════════════════════
 export const updatePlace = async (id, payload) => {
   const place = await updatePlaceById(id, payload);
   if (!place) throw new Error("Place not found");
   return place;
 };
 
+// ═══════════════════════════════════════════════════════════════
+// DELETE
+// ═══════════════════════════════════════════════════════════════
 export const removePlace = async (id) => {
   const result = await deletePlaceById(id);
   if (!result) throw new Error("Place not found");
   return { message: "Place deleted successfully" };
 };
 
-// ═══════════════════════════════════════════
-// GALLERY
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// GALLERY SERVICE
+// ═══════════════════════════════════════════════════════════════
 export const addGallery = async (placeId, imageUrl) => {
   const place = await addGalleryImage(placeId, imageUrl);
   if (!place) throw new Error("Place not found");

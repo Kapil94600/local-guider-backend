@@ -1,5 +1,5 @@
 // src/modules/places/place.repository.js
-import { Op, literal, fn, col } from "sequelize";
+import { Op, literal } from "sequelize";
 import Place from "../../database/models/core/Place.js";
 
 // ═══════════════════════════════════════════════════════════════
@@ -10,7 +10,7 @@ export const createPlace = async (payload) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// GET ALL PLACES — with optional filters (existing)
+// GET ALL PLACES — basic filter (existing)
 // ═══════════════════════════════════════════════════════════════
 export const getAllPlaces = async ({
   city,
@@ -20,12 +20,9 @@ export const getAllPlaces = async ({
   includeInactive = false,
 } = {}) => {
   const where = {};
-  if (city) where.city = city;
+  if (city) where.city = { [Op.iLike]: city };
   if (category) where.category = category;
-
-  if (!includeInactive) {
-    where.isActive = true;
-  }
+  if (!includeInactive) where.isActive = true;
 
   const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
   const safePage = Math.max(parseInt(page) || 1, 1);
@@ -39,18 +36,67 @@ export const getAllPlaces = async ({
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ NEW: GET NEARBY PLACES — smart location-based sorting
+// ✅ NORMALIZE: lowercase + trim for comparison
 // ═══════════════════════════════════════════════════════════════
-//
-// Tier priority:
-//   1. SAME_CITY      — user's current city (e.g., Fatehpur)
-//   2. SAME_DISTRICT  — same district (e.g., Sikar)
-//   3. NEARBY         — within `radius` km (default 50 km)
-//   4. SAME_STATE     — same state (e.g., Rajasthan)
-//   5. OTHER          — all other places
-//
-// Within each tier, places are sorted by distance (nearest first)
-//
+const normalize = (str) => {
+  if (!str) return null;
+  return String(str).trim().toLowerCase();
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ FUZZY MATCH: "Fatehpur Shekhawati" ↔ "Fatehpur"
+// Checks if one contains the other (bidirectional)
+// ═══════════════════════════════════════════════════════════════
+const fuzzyMatch = (a, b) => {
+  if (!a || !b) return false;
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (na === nb) return true;
+  return na.includes(nb) || nb.includes(na);
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ COMPUTE TIER for a single place
+// Priority:
+//   1 = SAME_CITY (exact or fuzzy)
+//   2 = SAME_DISTRICT
+//   3 = NEARBY (within radius)
+//   4 = SAME_STATE
+//   5 = OTHER
+// ═══════════════════════════════════════════════════════════════
+const computeTier = (
+  place,
+  { normCity, normDistrict, normState },
+  distance,
+  radius = 50
+) => {
+  // Tier 1: Same City (fuzzy match — "Fatehpur" == "Fatehpur Shekhawati")
+  if (normCity && fuzzyMatch(place.city, normCity)) {
+    return "SAME_CITY";
+  }
+
+  // Tier 2: Same District (fuzzy match)
+  if (normDistrict && fuzzyMatch(place.district, normDistrict)) {
+    return "SAME_DISTRICT";
+  }
+
+  // Tier 3: Nearby (within radius km)
+  if (distance != null && distance <= radius) {
+    return "NEARBY";
+  }
+
+  // Tier 4: Same State
+  if (normState && fuzzyMatch(place.state, normState)) {
+    return "SAME_STATE";
+  }
+
+  // Tier 5: Other
+  return "OTHER";
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ GET NEARBY PLACES — Smart location-based sorting
+// ═══════════════════════════════════════════════════════════════
 export const getNearbyPlaces = async ({
   lat,
   lng,
@@ -58,38 +104,37 @@ export const getNearbyPlaces = async ({
   district,
   state,
   radius = 50,
-  limit = 30,
+  limit = 100,
 }) => {
-  const safeLimit = Math.min(Math.max(parseInt(limit) || 30, 1), 100);
+  const safeLimit = Math.min(Math.max(parseInt(limit) || 100, 1), 500);
   const safeRadius = Math.min(Math.max(parseInt(radius) || 50, 1), 500);
 
-  // Normalize inputs
   const normCity = city ? String(city).trim() : null;
   const normDistrict = district ? String(district).trim() : null;
   const normState = state ? String(state).trim() : null;
 
-  // Has valid coordinates?
+  // ═══════════════════════════════════════════════════════════
+  // FALLBACK: If no valid coordinates, use string-based filter
+  // ═══════════════════════════════════════════════════════════
+  const latNum = lat != null ? parseFloat(lat) : null;
+  const lngNum = lng != null ? parseFloat(lng) : null;
   const hasCoords =
-    lat != null &&
-    lng != null &&
-    !isNaN(parseFloat(lat)) &&
-    !isNaN(parseFloat(lng));
+    latNum != null && lngNum != null && !isNaN(latNum) && !isNaN(lngNum);
 
-  const latNum = hasCoords ? parseFloat(lat) : null;
-  const lngNum = hasCoords ? parseFloat(lng) : null;
-
-  // ═══════════════════════════════════════════════════════════
-  // FALLBACK: If no coordinates, use city/district/state filter
-  // ═══════════════════════════════════════════════════════════
   if (!hasCoords) {
-    const where = { isActive: true };
-
-    // Build OR conditions
+    // 🔹 No coordinates → use city/district/state OR conditions
     const orConditions = [];
-    if (normCity) orConditions.push({ city: normCity });
-    if (normDistrict) orConditions.push({ district: normDistrict });
-    if (normState) orConditions.push({ state: normState });
+    if (normCity) {
+      orConditions.push({ city: { [Op.iLike]: `%${normCity}%` } });
+    }
+    if (normDistrict) {
+      orConditions.push({ district: { [Op.iLike]: `%${normDistrict}%` } });
+    }
+    if (normState) {
+      orConditions.push({ state: { [Op.iLike]: `%${normState}%` } });
+    }
 
+    const where = { isActive: true };
     if (orConditions.length > 0) {
       where[Op.or] = orConditions;
     }
@@ -97,39 +142,38 @@ export const getNearbyPlaces = async ({
     const places = await Place.findAll({
       where,
       limit: safeLimit,
-      order: [
-        // Same city first
-        [
-          literal(
-            normCity
-              ? `CASE WHEN city = '${normCity.replace(/'/g, "''")}' THEN 0 ELSE 1 END`
-              : `0`
-          ),
-          "ASC",
-        ],
-        // Same district second
-        [
-          literal(
-            normDistrict
-              ? `CASE WHEN district = '${normDistrict.replace(/'/g, "''")}' THEN 0 ELSE 1 END`
-              : `0`
-          ),
-          "ASC",
-        ],
-        ["rating", "DESC"],
-        ["createdAt", "DESC"],
-      ],
+      order: [["rating", "DESC"], ["createdAt", "DESC"]],
     });
 
-    return places.map((p) => ({
-      ...p.toJSON(),
-      distance: null,
-      tier: computeTier(p, { normCity, normDistrict, normState }, null),
-    }));
+    // Assign tiers + sort manually
+    const withTier = places.map((p) => {
+      const tier = computeTier(
+        p.toJSON(),
+        { normCity, normDistrict, normState },
+        null,
+        safeRadius
+      );
+      return {
+        ...p.toJSON(),
+        distance: null,
+        tier,
+        tierPriority: tierToPriority(tier),
+      };
+    });
+
+    // Sort by tier priority, then by rating
+    withTier.sort((a, b) => {
+      if (a.tierPriority !== b.tierPriority) {
+        return a.tierPriority - b.tierPriority;
+      }
+      return (b.rating || 0) - (a.rating || 0);
+    });
+
+    return withTier;
   }
 
   // ═══════════════════════════════════════════════════════════
-  // Haversine formula for distance in km
+  // Haversine formula for distance (km)
   // ═══════════════════════════════════════════════════════════
   const haversine = `
     6371 * acos(
@@ -143,22 +187,6 @@ export const getNearbyPlaces = async ({
     )
   `;
 
-  // Escape single quotes in SQL literals
-  const escCity = normCity ? normCity.replace(/'/g, "''") : null;
-  const escDistrict = normDistrict ? normDistrict.replace(/'/g, "''") : null;
-  const escState = normState ? normState.replace(/'/g, "''") : null;
-
-  // Tier priority CASE statement
-  const tierCase = `
-    CASE
-      ${escCity ? `WHEN "city" = '${escCity}' THEN 1` : ""}
-      ${escDistrict ? `WHEN "district" = '${escDistrict}' THEN 2` : ""}
-      WHEN (${haversine}) <= ${safeRadius} THEN 3
-      ${escState ? `WHEN "state" = '${escState}' THEN 4` : ""}
-      ELSE 5
-    END
-  `;
-
   const places = await Place.findAll({
     where: {
       isActive: true,
@@ -168,40 +196,63 @@ export const getNearbyPlaces = async ({
     attributes: {
       include: [[literal(`(${haversine})`), "distance"]],
     },
-    order: [
-      [literal(tierCase), "ASC"],           // Tier priority
-      [literal(`(${haversine})`), "ASC"],   // Then distance
-      ["rating", "DESC"],
-    ],
-    limit: safeLimit,
+    limit: safeLimit * 2, // Get more for filtering
     raw: true,
   });
 
-  return places.map((p) => ({
-    ...p,
-    distance: p.distance != null ? parseFloat(p.distance) : null,
-    tier: computeTier(
+  // ═══════════════════════════════════════════════════════════
+  // Compute tier + sort
+  // ═══════════════════════════════════════════════════════════
+  const withTier = places.map((p) => {
+    const distance = p.distance != null ? parseFloat(p.distance) : null;
+    const tier = computeTier(
       p,
       { normCity, normDistrict, normState },
-      p.distance != null ? parseFloat(p.distance) : null,
+      distance,
       safeRadius
-    ),
-  }));
+    );
+    return {
+      ...p,
+      distance,
+      tier,
+      tierPriority: tierToPriority(tier),
+    };
+  });
+
+  // Sort by:
+  //   1. Tier priority (SAME_CITY first)
+  //   2. Distance (nearest first)
+  //   3. Rating (highest first)
+  withTier.sort((a, b) => {
+    if (a.tierPriority !== b.tierPriority) {
+      return a.tierPriority - b.tierPriority;
+    }
+    const da = a.distance ?? Infinity;
+    const db = b.distance ?? Infinity;
+    if (da !== db) return da - db;
+    return (b.rating || 0) - (a.rating || 0);
+  });
+
+  return withTier.slice(0, safeLimit);
 };
 
 // ═══════════════════════════════════════════════════════════════
-// HELPER: Compute tier for a place
+// HELPER: Tier → numeric priority
 // ═══════════════════════════════════════════════════════════════
-const computeTier = (place, { normCity, normDistrict, normState }, distance, radius = 50) => {
-  const pCity = place.city ? String(place.city).trim() : null;
-  const pDistrict = place.district ? String(place.district).trim() : null;
-  const pState = place.state ? String(place.state).trim() : null;
-
-  if (normCity && pCity === normCity) return "SAME_CITY";
-  if (normDistrict && pDistrict === normDistrict) return "SAME_DISTRICT";
-  if (distance != null && distance <= radius) return "NEARBY";
-  if (normState && pState === normState) return "SAME_STATE";
-  return "OTHER";
+const tierToPriority = (tier) => {
+  switch (tier) {
+    case "SAME_CITY":
+      return 1;
+    case "SAME_DISTRICT":
+      return 2;
+    case "NEARBY":
+      return 3;
+    case "SAME_STATE":
+      return 4;
+    case "OTHER":
+    default:
+      return 5;
+  }
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -240,7 +291,7 @@ export const searchPlaces = async (q, city) => {
       { state: { [Op.iLike]: `%${q}%` } },
     ],
   };
-  if (city) where.city = city;
+  if (city) where.city = { [Op.iLike]: `%${city}%` };
   return await Place.findAll({ where, limit: 50 });
 };
 
@@ -265,7 +316,7 @@ export const deletePlaceById = async (id) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// GALLERY (unchanged)
+// GALLERY
 // ═══════════════════════════════════════════════════════════════
 export const addGalleryImage = async (placeId, imageUrl) => {
   const place = await Place.findByPk(placeId);

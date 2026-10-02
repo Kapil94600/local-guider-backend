@@ -1,9 +1,12 @@
 // src/modules/places/place.controller.js
+// ═══════════════════════════════════════════════════════════════
+// PLACE CONTROLLER — with nearby places (tier-based)
+// ═══════════════════════════════════════════════════════════════
 import { ApiResponse } from "../../utils/apiResponse.js";
 import {
   addPlace,
   fetchPlaces,
-  fetchNearbyPlaces,   // ✅ NEW
+  fetchNearbyPlaces,      // ✅ Nearby places
   fetchPlaceById,
   fetchFeaturedPlaces,
   searchPlacesService,
@@ -14,6 +17,9 @@ import {
   updateGallery,
 } from "./place.service.js";
 
+// ═══════════════════════════════════════════════════════════════
+// CREATE PLACE
+// ═══════════════════════════════════════════════════════════════
 export const createPlace = async (req, res, next) => {
   try {
     const place = await addPlace(req.body);
@@ -23,6 +29,9 @@ export const createPlace = async (req, res, next) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GET ALL PLACES (with basic filters)
+// ═══════════════════════════════════════════════════════════════
 export const getPlaces = async (req, res, next) => {
   try {
     const { city, category, page = 1, limit = 10 } = req.query;
@@ -34,8 +43,8 @@ export const getPlaces = async (req, res, next) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ NEW: GET NEARBY PLACES
-// GET /places/nearby?lat=26.9&lng=75.7&city=Fatehpur&district=Sikar&state=Rajasthan
+// ✅ NEW: GET NEARBY PLACES — Smart location-based sorting
+// GET /places/nearby?lat=27.99&lng=75.02&city=Fatehpur%20Shekhawati&district=Sikar&state=Rajasthan&radius=50&limit=100
 // ═══════════════════════════════════════════════════════════════
 export const getNearbyPlacesHandler = async (req, res, next) => {
   try {
@@ -46,8 +55,18 @@ export const getNearbyPlacesHandler = async (req, res, next) => {
       district,
       state,
       radius = 50,
-      limit = 30,
+      limit = 100,
     } = req.query;
+
+    console.log("📍 [getNearbyPlaces] params:", {
+      lat,
+      lng,
+      city,
+      district,
+      state,
+      radius,
+      limit,
+    });
 
     const places = await fetchNearbyPlaces({
       lat,
@@ -59,12 +78,20 @@ export const getNearbyPlacesHandler = async (req, res, next) => {
       limit,
     });
 
+    console.log(
+      `📍 [getNearbyPlaces] returned ${places?.length || 0} places`
+    );
+
     return ApiResponse.success(res, "Nearby places fetched", places);
   } catch (error) {
+    console.error("❌ [getNearbyPlaces] error:", error.message);
     next(error);
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GET FEATURED PLACES
+// ═══════════════════════════════════════════════════════════════
 export const getFeaturedPlaces = async (req, res, next) => {
   try {
     const places = await fetchFeaturedPlaces();
@@ -74,6 +101,9 @@ export const getFeaturedPlaces = async (req, res, next) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// SEARCH PLACES
+// ═══════════════════════════════════════════════════════════════
 export const searchPlaces = async (req, res, next) => {
   try {
     const { q, city } = req.query;
@@ -84,6 +114,9 @@ export const searchPlaces = async (req, res, next) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GET PLACE BY ID
+// ═══════════════════════════════════════════════════════════════
 export const getPlace = async (req, res, next) => {
   try {
     const place = await fetchPlaceById(req.params.id);
@@ -93,6 +126,9 @@ export const getPlace = async (req, res, next) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// UPDATE PLACE
+// ═══════════════════════════════════════════════════════════════
 export const editPlace = async (req, res, next) => {
   try {
     const place = await updatePlace(req.params.id, req.body);
@@ -102,6 +138,9 @@ export const editPlace = async (req, res, next) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// DELETE PLACE
+// ═══════════════════════════════════════════════════════════════
 export const deletePlace = async (req, res, next) => {
   try {
     const result = await removePlace(req.params.id);
@@ -111,14 +150,16 @@ export const deletePlace = async (req, res, next) => {
   }
 };
 
-// ═══════════════════════════════════════════
-// GALLERY
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// GALLERY — ADD IMAGE
+// ═══════════════════════════════════════════════════════════════
 export const addPlaceGalleryImage = async (req, res, next) => {
   try {
     const { imageUrl } = req.body;
     if (!imageUrl) {
-      return res.status(400).json({ success: false, message: "imageUrl is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "imageUrl is required" });
     }
     const place = await addGallery(req.params.id, imageUrl);
     return ApiResponse.success(res, "Image added to gallery", place);
@@ -127,6 +168,9 @@ export const addPlaceGalleryImage = async (req, res, next) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GALLERY — REMOVE IMAGE
+// ═══════════════════════════════════════════════════════════════
 export const removePlaceGalleryImage = async (req, res, next) => {
   try {
     const { imageUrl } = req.body;
@@ -137,11 +181,16 @@ export const removePlaceGalleryImage = async (req, res, next) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GALLERY — REPLACE ALL
+// ═══════════════════════════════════════════════════════════════
 export const replacePlaceGallery = async (req, res, next) => {
   try {
     const { images } = req.body;
     if (!Array.isArray(images)) {
-      return res.status(400).json({ success: false, message: "images must be an array" });
+      return res
+        .status(400)
+        .json({ success: false, message: "images must be an array" });
     }
     const place = await updateGallery(req.params.id, images);
     return ApiResponse.success(res, "Gallery updated", place);
