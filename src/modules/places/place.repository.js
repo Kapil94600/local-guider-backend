@@ -3,7 +3,7 @@
 // PLACE REPOSITORY — District + Distance based sorting
 // Priority: SAME_CITY → NEARBY → SAME_DISTRICT → OTHER
 // ═══════════════════════════════════════════════════════════════
-import { Op, literal } from "sequelize";
+import { Op } from "sequelize";
 import Place from "../../database/models/core/Place.js";
 
 // ═══════════════════════════════════════════════════════════════
@@ -32,16 +32,13 @@ const cityMatch = (placeCity, userCity) => {
   const uc = normalize(userCity);
   if (pc === uc) return true;
 
-  // Compare first words (handles "Fatehpur" vs "Fatehpur Shekhawati")
   const pcFirst = pc.split(/\s+/)[0];
   const ucFirst = uc.split(/\s+/)[0];
   return pcFirst === ucFirst;
 };
 
 // ═══════════════════════════════════════════════════════════════
-// DISTRICT MATCH — exact comparison
-// "Sikar" ↔ "Sikar" → true
-// "Sikar" ↔ "Jaipur" → false
+// DISTRICT MATCH — exact comparison (normalized)
 // ═══════════════════════════════════════════════════════════════
 const districtMatch = (placeDistrict, userDistrict) => {
   if (!placeDistrict || !userDistrict) return false;
@@ -70,15 +67,7 @@ const haversineDistance = (lat1, lon1, lat2, lon2) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ COMPUTE TIER — 4 tiers with priority
-//
-// Priority order:
-//   1 = SAME_CITY      → exact city (Fatehpur Shekhawati)
-//   2 = NEARBY         → within 50 km (city match nahi, but distance zyada kam)
-//   3 = SAME_DISTRICT  → same district (Sikar) but > 50km door
-//   4 = OTHER          → baaki sab
-//
-// Note: Agar place same city hai AND nearby hai, toh SAME_CITY priority milegi
+// COMPUTE TIER — 4 tiers
 // ═══════════════════════════════════════════════════════════════
 const computeTier = (
   place,
@@ -86,22 +75,22 @@ const computeTier = (
   distance,
   radius = 50
 ) => {
-  // Tier 1: Same City
+  // Tier 1: SAME_CITY
   if (normCity && cityMatch(place.city, normCity)) {
     return "SAME_CITY";
   }
 
-  // Tier 2: Nearby (within radius) — city match nahi but distance < 50km
+  // Tier 2: NEARBY (within radius) — computed from distance
   if (distance != null && distance <= radius) {
     return "NEARBY";
   }
 
-  // Tier 3: Same District (Sikar) — city match nahi, distance > 50km
+  // Tier 3: SAME_DISTRICT
   if (normDistrict && districtMatch(place.district, normDistrict)) {
     return "SAME_DISTRICT";
   }
 
-  // Tier 4: Other
+  // Tier 4: OTHER
   return "OTHER";
 };
 
@@ -123,7 +112,18 @@ const tierToPriority = (tier) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ GET NEARBY PLACES — City + Distance + District
+// ✅ GET NEARBY PLACES — 4-tier district + distance aware
+//
+// Strategy:
+//  1. Fetch ALL active places (limit 500)
+//  2. Compute distance + tier for each
+//  3. Sort by tier priority → distance → rating
+//  4. Return everything (mobile will filter by tier)
+//
+// Why not filter in DB?
+//   - District matching is tricky (state_district vs district)
+//   - Small dataset (500 max) so memory filter is fine
+//   - Avoids SQL case-sensitivity issues
 // ═══════════════════════════════════════════════════════════════
 export const getNearbyPlaces = async ({
   lat,
@@ -148,6 +148,7 @@ export const getNearbyPlaces = async ({
   console.log("🔍 [getNearbyPlaces] Input:", {
     city: normCity,
     district: normDistrict,
+    state: state || null,
     hasCoords,
     lat: latNum,
     lng: lngNum,
@@ -155,37 +156,17 @@ export const getNearbyPlaces = async ({
   });
 
   // ═══════════════════════════════════════════════════════════
-  // Build DB Query — District + City + State OR filter
-  // (fetch only relevant places, not all 500)
+  // ✅ Fetch ALL active places (NO SQL filter — filter in JS)
   // ═══════════════════════════════════════════════════════════
-  const orConditions = [];
-
-  if (normCity) {
-    orConditions.push({ city: { [Op.iLike]: `%${normCity}%` } });
-    // Also match first word — "Fatehpur%" matches "Fatehpur Shekhawati"
-    orConditions.push({
-      city: { [Op.iLike]: `${normCity.split(/\s+/)[0]}%` },
-    });
-  }
-
-  if (normDistrict) {
-    orConditions.push({ district: { [Op.iLike]: `%${normDistrict}%` } });
-  }
-
-  const where = { isActive: true };
-  if (orConditions.length > 0) {
-    where[Op.or] = orConditions;
-  }
-
   const places = await Place.findAll({
-    where,
+    where: { isActive: true },
     limit: 500,
   });
 
   console.log(`📦 [getNearbyPlaces] Fetched ${places.length} places from DB`);
 
   // ═══════════════════════════════════════════════════════════
-  // Compute distance + tier for each
+  // Compute distance + tier
   // ═══════════════════════════════════════════════════════════
   const withTier = places.map((p) => {
     const pJson = p.toJSON();
@@ -214,7 +195,7 @@ export const getNearbyPlaces = async ({
   });
 
   // ═══════════════════════════════════════════════════════════
-  // Group counts (for logging)
+  // Debug: show tier counts
   // ═══════════════════════════════════════════════════════════
   const counts = {
     SAME_CITY: withTier.filter((p) => p.tier === "SAME_CITY").length,
@@ -225,18 +206,29 @@ export const getNearbyPlaces = async ({
   console.log("🎯 [getNearbyPlaces] Tier counts:", counts);
 
   // ═══════════════════════════════════════════════════════════
-  // Sort: tier priority → distance → rating
+  // Debug: log first few places with their tier
+  // ═══════════════════════════════════════════════════════════
+  console.log(
+    "🎯 [getNearbyPlaces] Sample:",
+    withTier.slice(0, 8).map((p) => ({
+      name: p.name,
+      city: p.city,
+      district: p.district,
+      distance: p.distance?.toFixed(1),
+      tier: p.tier,
+    }))
+  );
+
+  // ═══════════════════════════════════════════════════════════
+  // ✅ NO FILTER — return all 4 tiers, mobile will group
   // ═══════════════════════════════════════════════════════════
   withTier.sort((a, b) => {
-    // 1. Tier priority
     if (a.tierPriority !== b.tierPriority) {
       return a.tierPriority - b.tierPriority;
     }
-    // 2. Within same tier: nearest first
     const da = a.distance ?? Infinity;
     const db = b.distance ?? Infinity;
     if (da !== db) return da - db;
-    // 3. Then by rating
     return (b.rating || 0) - (a.rating || 0);
   });
 
@@ -244,7 +236,7 @@ export const getNearbyPlaces = async ({
 };
 
 // ═══════════════════════════════════════════════════════════════
-// GET ALL PLACES (basic filter)
+// GET ALL PLACES (basic filter — used by admin / list screens)
 // ═══════════════════════════════════════════════════════════════
 export const getAllPlaces = async ({
   city,
