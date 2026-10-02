@@ -2,12 +2,12 @@
 import {
   createPlace,
   getAllPlaces,
+  getNearbyPlaces,   // ✅ NEW
   getPlaceById,
   getFeatured,
   searchPlaces,
   updatePlaceById,
   deletePlaceById,
-  // ✅ Gallery
   addGalleryImage,
   removeGalleryImage,
   replaceGallery,
@@ -19,6 +19,27 @@ export const addPlace = async (payload) => {
 
 export const fetchPlaces = async ({ city, category, page, limit }) => {
   return await getAllPlaces({ city, category, page, limit });
+};
+
+// ✅ NEW: Fetch nearby places with location-based sorting
+export const fetchNearbyPlaces = async ({
+  lat,
+  lng,
+  city,
+  district,
+  state,
+  radius,
+  limit,
+}) => {
+  return await getNearbyPlaces({
+    lat,
+    lng,
+    city,
+    district,
+    state,
+    radius,
+    limit,
+  });
 };
 
 export const fetchFeaturedPlaces = async () => {
@@ -48,7 +69,7 @@ export const removePlace = async (id) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ GALLERY service
+// GALLERY
 // ═══════════════════════════════════════════
 export const addGallery = async (placeId, imageUrl) => {
   const place = await addGalleryImage(placeId, imageUrl);

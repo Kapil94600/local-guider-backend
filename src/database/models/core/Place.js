@@ -1,3 +1,4 @@
+// src/database/models/core/Place.js
 import { DataTypes } from "sequelize";
 import { sequelize } from "../../../config/database.js";
 
@@ -24,12 +25,21 @@ const Place = sequelize.define(
     },
     city: {
       type: DataTypes.STRING,
+      index: true,
+    },
+    // ✅ NEW: district column
+    district: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+      index: true,
     },
     state: {
       type: DataTypes.STRING,
+      index: true,
     },
     country: {
       type: DataTypes.STRING,
+      defaultValue: "India",
     },
     latitude: {
       type: DataTypes.DOUBLE,
@@ -70,6 +80,13 @@ const Place = sequelize.define(
   {
     tableName: "places",
     timestamps: true,
+    indexes: [
+      { fields: ["city"] },
+      { fields: ["district"] },
+      { fields: ["state"] },
+      { fields: ["isActive"] },
+      { fields: ["latitude", "longitude"] },
+    ],
   }
 );
 

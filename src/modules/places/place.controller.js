@@ -3,12 +3,12 @@ import { ApiResponse } from "../../utils/apiResponse.js";
 import {
   addPlace,
   fetchPlaces,
+  fetchNearbyPlaces,   // ✅ NEW
   fetchPlaceById,
   fetchFeaturedPlaces,
   searchPlacesService,
   updatePlace,
   removePlace,
-  // ✅ Gallery
   addGallery,
   removeGallery,
   updateGallery,
@@ -28,6 +28,38 @@ export const getPlaces = async (req, res, next) => {
     const { city, category, page = 1, limit = 10 } = req.query;
     const places = await fetchPlaces({ city, category, page, limit });
     return ApiResponse.success(res, "Places fetched successfully", places);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: GET NEARBY PLACES
+// GET /places/nearby?lat=26.9&lng=75.7&city=Fatehpur&district=Sikar&state=Rajasthan
+// ═══════════════════════════════════════════════════════════════
+export const getNearbyPlacesHandler = async (req, res, next) => {
+  try {
+    const {
+      lat,
+      lng,
+      city,
+      district,
+      state,
+      radius = 50,
+      limit = 30,
+    } = req.query;
+
+    const places = await fetchNearbyPlaces({
+      lat,
+      lng,
+      city,
+      district,
+      state,
+      radius,
+      limit,
+    });
+
+    return ApiResponse.success(res, "Nearby places fetched", places);
   } catch (error) {
     next(error);
   }
@@ -80,7 +112,7 @@ export const deletePlace = async (req, res, next) => {
 };
 
 // ═══════════════════════════════════════════
-// ✅ GALLERY controllers
+// GALLERY
 // ═══════════════════════════════════════════
 export const addPlaceGalleryImage = async (req, res, next) => {
   try {

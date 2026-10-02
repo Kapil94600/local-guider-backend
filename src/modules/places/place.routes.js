@@ -3,12 +3,12 @@ import express from "express";
 import {
   createPlace,
   getPlaces,
+  getNearbyPlacesHandler,   // ✅ NEW
   getFeaturedPlaces,
   searchPlaces,
   getPlace,
   editPlace,
   deletePlace,
-  // ✅ Gallery
   addPlaceGalleryImage,
   removePlaceGalleryImage,
   replacePlaceGallery,
@@ -18,20 +18,32 @@ import { authorize } from "../../middlewares/authorizeMiddleware.js";
 
 const router = express.Router();
 
-// Public Routes
+// ═══════════════════════════════════════════════════════════════
+// PUBLIC ROUTES
+// ═══════════════════════════════════════════════════════════════
 router.get("/", getPlaces);
+
+// ✅ NEW: Nearby places — MUST BE BEFORE /:id
+router.get("/nearby", getNearbyPlacesHandler);
+
 router.get("/featured", getFeaturedPlaces);
 router.get("/search", searchPlaces);
-router.get("/:id", getPlace);
 
-// Admin Routes
+// ═══════════════════════════════════════════════════════════════
+// ADMIN ROUTES
+// ═══════════════════════════════════════════════════════════════
 router.post("/", authenticate, authorize("ADMIN"), createPlace);
 router.put("/:id", authenticate, authorize("ADMIN"), editPlace);
 router.delete("/:id", authenticate, authorize("ADMIN"), deletePlace);
 
-// ✅ Gallery Routes
+// Gallery routes
 router.post("/:id/gallery", authenticate, authorize("ADMIN"), addPlaceGalleryImage);
 router.delete("/:id/gallery", authenticate, authorize("ADMIN"), removePlaceGalleryImage);
 router.put("/:id/gallery", authenticate, authorize("ADMIN"), replacePlaceGallery);
+
+// ═══════════════════════════════════════════════════════════════
+// /:id — MUST BE LAST (catch-all)
+// ═══════════════════════════════════════════════════════════════
+router.get("/:id", getPlace);
 
 export default router;
