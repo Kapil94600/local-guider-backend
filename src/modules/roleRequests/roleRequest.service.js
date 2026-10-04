@@ -32,18 +32,44 @@ export const addRoleRequest = async (userId, requestedRole, details) => {
     ? details.placeIds.map(String)
     : [];
 
+  // ✅ Normalize languages array
+  const languages = Array.isArray(details.languages)
+    ? details.languages.map((l) => String(l).trim()).filter(Boolean)
+    : [];
+
   return await createRoleRequest({
     userId,
     requestedRole,
     status: "PENDING",
-    message: details.message || null,
+
+    // Legacy + new bio
+    message: details.message || details.bio || null,
+    bio: details.bio || details.message || null,
+
+    // Basic
     fullName: details.fullName,
     companyName: details.companyName || null,
     location: details.location,
+
+    // ✅ NEW: Contact details
+    email: details.email || null,
+    whatsappNumber: details.whatsappNumber || null,
+    alternatePhone: details.alternatePhone || null,
+
+    // ✅ NEW: Personal details
+    dateOfBirth: details.dateOfBirth || null,
+    gender: details.gender || null,
+
+    // ✅ NEW: Professional details
+    experience: parseInt(details.experience, 10) || 0,
+    languages,
+
+    // Documents
     selfieUrl: details.selfieUrl,
     idFrontUrl: details.idFrontUrl,
     idBackUrl: details.idBackUrl,
     profilePhotoUrl: details.profilePhotoUrl,
+
     placeIds,
     idType: details.idType || "AADHAAR",
   });
@@ -62,13 +88,3 @@ export const fetchRoleRequest = async (id) => {
   if (!request) throw new ApiError(404, "Role request not found");
   return request;
 };
-
-// ═══════════════════════════════════════════════════════════════
-// NOTE: processRoleRequest() REMOVED
-// ═══════════════════════════════════════════════════════════════
-// Admin approval logic consolidated into:
-//   → src/modules/admin/adminRoleRequest.controller.js
-//
-// Reason: Avoid duplicate logic. Both had same transaction +
-//         profile creation + ID card code.
-// ═══════════════════════════════════════════════════════════════

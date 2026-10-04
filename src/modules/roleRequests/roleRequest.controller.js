@@ -7,14 +7,31 @@ import {
   fetchRoleRequest,
 } from "./roleRequest.service.js";
 import { uploadToCloudinary } from "../../utils/cloudinaryUpload.js";
+import { logger } from "../../utils/logger.js";
 
 // ═══════════════════════════════════════════
-// CREATE ROLE REQUEST — Cloudinary upload
+// CREATE ROLE REQUEST
 // ═══════════════════════════════════════════
 export const createRoleRequest = async (req, res, next) => {
   try {
     const requestedRole = req.body.requestedRole || req.body.role;
-    const { message, fullName, companyName, location, idType } = req.body;
+
+    // ✅ NEW: extract all fields
+    const {
+      message,
+      bio,
+      fullName,
+      companyName,
+      location,
+      idType,
+      email,
+      whatsappNumber,
+      alternatePhone,
+      dateOfBirth,
+      gender,
+      experience,
+      languages,
+    } = req.body;
 
     // ── Validate role ──
     if (!requestedRole || !["GUIDER", "PHOTOGRAPHER"].includes(requestedRole)) {
@@ -24,10 +41,37 @@ export const createRoleRequest = async (req, res, next) => {
       });
     }
 
+    // ── Basic validation ──
     if (!fullName || !location) {
       return res.status(400).json({
         success: false,
-        message: "Full name aur location zaroori hai",
+        message: "Full name and location are required",
+      });
+    }
+
+    // ── Email validation (optional but must be valid if provided) ──
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email format",
+      });
+    }
+
+    // ── Phone validation (basic 10-digit check) ──
+    const phoneRegex = /^[0-9]{10,15}$/;
+    if (whatsappNumber && !phoneRegex.test(whatsappNumber.replace(/\D/g, ""))) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid WhatsApp number",
+      });
+    }
+    if (
+      alternatePhone &&
+      !phoneRegex.test(alternatePhone.replace(/\D/g, ""))
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid alternate phone number",
       });
     }
 
@@ -58,17 +102,34 @@ export const createRoleRequest = async (req, res, next) => {
     if (placeIds.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "Kam se kam 1 place select karna zaroori hai",
+        message: "At least 1 place must be selected",
       });
     }
     if (placeIds.length > 3) {
       return res.status(400).json({
         success: false,
-        message: "Zyada se zyada 3 places select kar sakte ho",
+        message: "Maximum 3 places allowed",
       });
     }
 
-    // ── Validate files present ──
+    // ── Parse languages ──
+    let langsArray = [];
+    if (Array.isArray(languages)) {
+      langsArray = languages;
+    } else if (typeof languages === "string") {
+      try {
+        const parsed = JSON.parse(languages);
+        langsArray = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        // Comma-separated fallback
+        langsArray = languages
+          .split(",")
+          .map((l) => l.trim())
+          .filter(Boolean);
+      }
+    }
+
+    // ── Validate files ──
     const files = req.files || {};
     if (
       !files.selfie?.[0] ||
@@ -79,14 +140,14 @@ export const createRoleRequest = async (req, res, next) => {
       return res.status(400).json({
         success: false,
         message:
-          "Selfie, ID front, ID back, aur profile photo — sabhi zaroori hain",
+          "Selfie, ID front, ID back, and profile photo are all required",
       });
     }
 
     // ═══════════════════════════════════════════
-    // ⚡ Upload all 4 files to Cloudinary IN PARALLEL
+    // ⚡ Upload all 4 files in parallel
     // ═══════════════════════════════════════════
-    console.log("📤 Uploading 4 files to Cloudinary...");
+    logger.info("📤 Uploading 4 files to Cloudinary...");
     const [selfieUrl, idFrontUrl, idBackUrl, profilePhotoUrl] =
       await Promise.all([
         uploadToCloudinary(
@@ -107,11 +168,12 @@ export const createRoleRequest = async (req, res, next) => {
         ),
       ]);
 
-    console.log("✅ All 4 files uploaded to Cloudinary");
+    logger.info("✅ All 4 files uploaded to Cloudinary");
 
-    // ── Create role request in DB ──
+    // ── Create role request ──
     const request = await addRoleRequest(req.user.id, requestedRole, {
       message,
+      bio,
       fullName,
       companyName,
       location,
@@ -121,15 +183,25 @@ export const createRoleRequest = async (req, res, next) => {
       idBackUrl,
       profilePhotoUrl,
       idType: cleanIdType,
+
+      // ✅ NEW
+      email,
+      whatsappNumber,
+      alternatePhone,
+      dateOfBirth,
+      gender,
+      experience,
+      languages: langsArray,
     });
 
     return ApiResponse.success(
       res,
       "Role request created successfully",
-      request
+      request,
+      201
     );
   } catch (error) {
-    console.error("❌ createRoleRequest error:", error.message);
+    logger.error(`❌ createRoleRequest error: ${error.message}`);
     next(error);
   }
 };
@@ -181,12 +253,3 @@ export const getRoleRequest = async (req, res, next) => {
     next(error);
   }
 };
-
-// ═══════════════════════════════════════════
-// NOTE: updateRoleRequest() REMOVED
-// ═══════════════════════════════════════════
-// Admin approval is now handled by:
-//   → adminRoleRequest.controller.js → updateRoleRequestStatus()
-//
-// Routes have been updated to use admin controller directly.
-// ═══════════════════════════════════════════
