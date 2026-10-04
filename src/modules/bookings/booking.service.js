@@ -1,7 +1,7 @@
 // src/modules/bookings/booking.service.js
 // ═══════════════════════════════════════════════════════════════
 // BOOKING SERVICE — full status flow + OTP + refunds + notifications
-// ✅ UPDATED: Rich push notifications with full booking details
+// ✅ Rich push notifications with full booking details
 // ═══════════════════════════════════════════════════════════════
 import {
   createBooking,
@@ -22,6 +22,7 @@ import PhotographerPlan from "../../database/models/core/PhotographerPlan.js";
 import Guider from "../../database/models/core/Guider.js";
 import Photographer from "../../database/models/core/Photographer.js";
 import User from "../../database/models/core/User.js";
+import Place from "../../database/models/core/Place.js";
 import { sequelize } from "../../config/database.js";
 import { generateOtp } from "../../utils/otp.js";
 import { ApiError } from "../../utils/apiError.js";
@@ -336,8 +337,6 @@ export const addBooking = async (userId, payload) => {
   // ✅ Fetch place name
   let placeName = "Unknown Place";
   if (payload.placeId) {
-    const Place = (await import("../../database/models/core/Place.js"))
-      .default;
     const place = await Place.findByPk(payload.placeId, {
       attributes: ["id", "name"],
     });
@@ -934,7 +933,7 @@ export const requestCompletion = async (providerId, bookingId, role) => {
         )} is being completed. Your OTP is: ${otp}. Share ONLY with your provider.`,
         type: "BOOKING",
         data: { bookingId: booking.id },
-        channels: ["IN_APP"], // Only in-app, no push
+        channels: ["IN_APP"],
       });
     } catch (e) {
       logger.error(`Customer OTP notification failed: ${e.message}`);
