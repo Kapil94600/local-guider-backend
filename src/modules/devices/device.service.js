@@ -17,7 +17,7 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
   const cleanToken = token.trim();
 
   // ═══════════════════════════════════════════════════════════
-  // ✅ FULL LOGGING — Debug ke liye
+  // ✅ FULL LOGGING
   // ═══════════════════════════════════════════════════════════
   console.log("═══════════════════════════════════════════════════");
   console.log("📱 [Device] REGISTER TOKEN REQUEST");
@@ -29,21 +29,13 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
   console.log("   Metadata      :", JSON.stringify(metadata));
   console.log("═══════════════════════════════════════════════════");
 
-  // ─── Warning: chhota token ───
+  // Warning agar chhota token
   if (cleanToken.length < 50) {
     console.log(
-      `⚠️ [Device] Token SUSPICIOUSLY SHORT: ${cleanToken.length} chars`
+      `⚠️ [Device] Token SHORT: ${cleanToken.length} chars (expected ~52)`
     );
     logger.warn(
       `⚠️ [Device] Token short: ${cleanToken.length} chars — ${cleanToken}`
-    );
-  }
-
-  // ─── Warning: truncated token ───
-  if (cleanToken.endsWith("]") && cleanToken.includes("ExponentPushToken[")) {
-    const innerLength = cleanToken.length - "ExponentPushToken[]".length;
-    console.log(
-      `⚠️ [Device] Token TRUNCATED? Inner length: ${innerLength} chars (expected ~22)`
     );
   }
 
@@ -53,7 +45,7 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
       where: { userId, fcmToken: cleanToken },
       defaults: {
         userId,
-        fcmToken: cleanToken, // ← Full token
+        fcmToken: cleanToken,
         deviceName: metadata.deviceName || null,
         deviceType: metadata.deviceType || null,
         os: metadata.os || null,
@@ -65,20 +57,18 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
     if (!created) {
       await device.update({ lastActiveAt: new Date() });
       console.log(
-        `✅ [Device] Existing token updated — user: ${userId.slice(0, 8)}, token length: ${device.fcmToken.length}`
+        `✅ [Device] Existing token updated — user: ${userId.slice(0, 8)}, length: ${device.fcmToken.length}`
       );
-      logger.info(
-        `📱 [Device] Existing token updated for ${userId.slice(0, 8)}`
-      );
+      logger.info(`📱 [Device] Existing token updated for ${userId.slice(0, 8)}`);
     } else {
       console.log(
-        `✅ [Device] NEW token registered — user: ${userId.slice(0, 8)}, token length: ${device.fcmToken.length}`
+        `✅ [Device] NEW token — user: ${userId.slice(0, 8)}, length: ${device.fcmToken.length}`
       );
       logger.info(`📱 [Device] New token registered for ${userId.slice(0, 8)}`);
     }
 
     // ═══════════════════════════════════════════════════════════
-    // ✅ Verify — DB se wapas fetch karo
+    // ✅ VERIFY FROM DB — Full token save hua ya nahi
     // ═══════════════════════════════════════════════════════════
     const savedDevice = await Device.findByPk(device.id);
     console.log("═══════════════════════════════════════════════════");
@@ -90,7 +80,6 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
 
     return savedDevice;
   } catch (err) {
-    // Handle unique constraint
     if (err.name === "SequelizeUniqueConstraintError") {
       logger.info(`📱 [Device] Token exists for user ${userId.slice(0, 8)}`);
       const existing = await Device.findOne({
@@ -107,7 +96,7 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// UNREGISTER TOKEN (logout ke waqt)
+// UNREGISTER TOKEN
 // ═══════════════════════════════════════════════════════════════
 export const unregisterDeviceToken = async (userId, token) => {
   if (!token) throw new ApiError(400, "Token is required");
@@ -137,16 +126,16 @@ export const getUserDevices = async (userId) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// CLEANUP INVALID / TRUNCATED TOKENS (admin utility)
+// CLEANUP INVALID TOKENS
 // ═══════════════════════════════════════════════════════════════
 export const cleanupInvalidTokens = async () => {
   const { Op } = await import("sequelize");
 
-  // Delete tokens that are truncated or invalid
+  // Delete truncated tokens (< 50 chars)
   const deleted = await Device.destroy({
     where: {
       [Op.or]: [
-        { fcmToken: "ExponentPushToken[]" }, // Empty tokens
+        { fcmToken: "ExponentPushToken[]" },
       ],
     },
   });

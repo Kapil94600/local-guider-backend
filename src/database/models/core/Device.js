@@ -37,10 +37,10 @@ const Device = sequelize.define(
     },
 
     // ═══════════════════════════════════════════════════════════
-    // ✅ CRITICAL: TEXT (unlimited length) — NOT VARCHAR
+    // ✅ CRITICAL: TEXT — unlimited length (Expo tokens ~52 chars)
     // ═══════════════════════════════════════════════════════════
     fcmToken: {
-      type: DataTypes.TEXT,  // ← ✅ TEXT
+      type: DataTypes.TEXT,
       allowNull: false,
     },
 
