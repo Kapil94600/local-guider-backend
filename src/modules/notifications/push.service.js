@@ -1,7 +1,4 @@
 // src/modules/notifications/push.service.js
-// ═══════════════════════════════════════════════════════════════
-// PUSH SERVICE — Expo Push API with badge + grouping + cleanup
-// ═══════════════════════════════════════════════════════════════
 import { Expo } from "expo-server-sdk";
 import Device from "../../database/models/core/Device.js";
 import Notification from "../../database/models/core/Notification.js";
@@ -76,20 +73,14 @@ export const sendPushNotification = async (
   type = "SYSTEM"
 ) => {
   try {
-    // 1. Fetch all devices for user
     const devices = await Device.findAll({ where: { userId } });
 
     if (devices.length === 0) {
       return { success: true, skipped: true, reason: "no-devices" };
     }
 
-    // 2. Get unread count (for badge)
     const unreadCount = await getUnreadCountForBadge(userId);
-
-    // 3. Grouping metadata
     const grouping = getGroupingMeta(type, data);
-
-    // 4. Channel ID per type
     const channelId = getChannelIdForType(type);
 
     const messages = [];
@@ -97,11 +88,7 @@ export const sendPushNotification = async (
 
     for (const device of devices) {
       const token = device.fcmToken;
-
-      if (!token) {
-        continue;
-      }
-
+      if (!token) continue;
       if (!Expo.isExpoPushToken(token)) {
         logger.warn(`Invalid Expo token for device ${device.id}`);
         continue;
@@ -129,7 +116,6 @@ export const sendPushNotification = async (
       return { success: true, skipped: true, reason: "no-valid-tokens" };
     }
 
-    // 5. Send in chunks
     const chunks = expo.chunkPushNotifications(messages);
     const tickets = [];
     const invalidTokens = [];
@@ -139,16 +125,13 @@ export const sendPushNotification = async (
         const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
         tickets.push(...ticketChunk);
 
-        // Check each ticket for errors
         for (let i = 0; i < ticketChunk.length; i++) {
           const ticket = ticketChunk[i];
           const msg = chunk[i];
 
           if (ticket.status === "error") {
             const errorCode = ticket.details?.error;
-            logger.warn(
-              `Push ticket error: ${errorCode} — ${ticket.message}`
-            );
+            logger.warn(`Push ticket error: ${errorCode} — ${ticket.message}`);
 
             if (errorCode === "DeviceNotRegistered") {
               invalidTokens.push(msg.to);
@@ -160,7 +143,6 @@ export const sendPushNotification = async (
       }
     }
 
-    // 6. Cleanup invalid tokens
     if (invalidTokens.length > 0) {
       try {
         await Device.destroy({ where: { fcmToken: invalidTokens } });

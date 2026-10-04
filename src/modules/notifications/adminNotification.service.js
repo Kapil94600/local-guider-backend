@@ -7,7 +7,7 @@ import { getBroadcastEmailTemplate } from "../../utils/emailTemplates.js";
 import { logger } from "../../utils/logger.js";
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FIX B-7: CHUNK SIZE for bulk operations
+// CHUNK SIZE for bulk operations
 // ═══════════════════════════════════════════════════════════════
 const CHUNK_SIZE = 50;
 
@@ -23,7 +23,7 @@ const determinePrimaryChannel = (channels = []) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ FIX B-7: Send in chunks with allSettled
+// Send in chunks with allSettled
 // ═══════════════════════════════════════════════════════════════
 const sendInChunks = async (items, sendFn) => {
   for (let i = 0; i < items.length; i += CHUNK_SIZE) {
@@ -42,7 +42,6 @@ export const broadcastNotification = async ({
   targetRole = "ALL",
   channels = ["PUSH", "EMAIL"],
 }) => {
-  // Build user filter
   let where = {};
   if (targetRole && targetRole !== "ALL") where.role = targetRole;
 
@@ -55,7 +54,6 @@ export const broadcastNotification = async ({
 
   const primaryChannel = determinePrimaryChannel(channels);
 
-  // ─── Bulk insert in-app notifications ───
   const notifications = await Notification.bulkCreate(
     users.map((user) => ({
       userId: user.id,
@@ -73,8 +71,7 @@ export const broadcastNotification = async ({
     `📢 Broadcast: "${title}" → ${users.length} users (channels: ${channels.join(", ")})`
   );
 
-  // ─── ✅ FIX B-7: Push + Email in CHUNKS (non-blocking) ───
-  // Fire-and-forget — but chunked to avoid memory spikes
+  // Fire-and-forget background delivery
   (async () => {
     try {
       if (channels.includes("PUSH")) {
@@ -82,7 +79,9 @@ export const broadcastNotification = async ({
           try {
             await sendPushNotification(user.id, title, message, { type });
           } catch (err) {
-            logger.error(`Push failed for ${user.id.slice(0, 8)}: ${err.message}`);
+            logger.error(
+              `Push failed for ${user.id.slice(0, 8)}: ${err.message}`
+            );
           }
         });
       }

@@ -1,238 +1,144 @@
-// src/services/notificationService.js
-// ═══════════════════════════════════════════════════════════════
-// Notification service — channels, permissions, token registration
-// ═══════════════════════════════════════════════════════════════
-import { Platform } from "react-native";
-import Constants from "expo-constants";
-import { deviceApi } from "../api/device";
-import { logger } from "../utils/logger";
+// src/modules/notifications/notification.service.js
+import {
+  createNotification,
+  getNotificationsByUser,
+  getNotificationById,
+  getNotificationWithDetails,
+  markNotificationRead,
+  markAllNotificationsRead,
+  deleteNotification,
+  deleteAllNotifications,
+  getUnreadCount,
+} from "./notification.repository.js";
+import { sendPushNotification } from "./push.service.js";
+import { ApiError } from "../../utils/apiError.js";
+import { logger } from "../../utils/logger.js";
 
-const isExpoGo = Constants.executionEnvironment === "storeClient";
-
-// ✅ Safe import — Expo Go mein notifications disabled
-let Notifications = null;
-if (!isExpoGo) {
-  Notifications = require("expo-notifications");
-}
-
 // ═══════════════════════════════════════════════════════════════
-// ANDROID CHANNELS
+// ✅ ADD NOTIFICATION (ye function booking.service.js use karti hai)
 // ═══════════════════════════════════════════════════════════════
-export const setupNotificationChannels = async () => {
-  if (isExpoGo || Platform.OS !== "android") return;
-
+export const addNotification = async ({
+  userId,
+  title,
+  message,
+  type = "SYSTEM",
+  data = {},
+  channels = ["IN_APP"],
+}) => {
   try {
-    await Notifications.setNotificationChannelAsync("default", {
-      name: "Default",
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: "#FFD700",
-      sound: "default",
-      showBadge: true,
-    });
+    let notification = null;
 
-    await Notifications.setNotificationChannelAsync("bookings", {
-      name: "Bookings",
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: "#10B981",
-      sound: "default",
-      showBadge: true,
-    });
-
-    await Notifications.setNotificationChannelAsync("chat", {
-      name: "Chat Messages",
-      importance: Notifications.AndroidImportance.HIGH,
-      vibrationPattern: [0, 200, 200, 200],
-      lightColor: "#3B82F6",
-      sound: "default",
-      showBadge: true,
-    });
-
-    await Notifications.setNotificationChannelAsync("reminders", {
-      name: "Reminders",
-      importance: Notifications.AndroidImportance.HIGH,
-      lightColor: "#F59E0B",
-      sound: "default",
-      showBadge: true,
-    });
-
-    logger.log("✅ Notification channels set up");
-  } catch (err) {
-    logger.error("❌ Channel setup error:", err);
-  }
-};
-
-// ═══════════════════════════════════════════════════════════════
-// REQUEST PERMISSIONS
-// ═══════════════════════════════════════════════════════════════
-export const requestNotificationPermissions = async () => {
-  if (isExpoGo) return false;
-
-  try {
-    const { status: existing } = await Notifications.getPermissionsAsync();
-    logger.log(`🔔 Existing permission status: ${existing}`);
-
-    if (existing === "granted") return true;
-
-    const { status } = await Notifications.requestPermissionsAsync({
-      ios: {
-        allowAlert: true,
-        allowBadge: true,
-        allowSound: true,
-      },
-    });
-
-    logger.log(`🔔 Permission after request: ${status}`);
-    return status === "granted";
-  } catch (err) {
-    logger.error("❌ Permission error:", err);
-    return false;
-  }
-};
-
-// ═══════════════════════════════════════════════════════════════
-// ✅ REGISTER EXPO PUSH TOKEN (call after login)
-// ═══════════════════════════════════════════════════════════════
-export const registerPushToken = async () => {
-  if (isExpoGo) {
-    logger.log(
-      "⚠️ Expo Go — skipping push token register (Expo Go does not support push)"
-    );
-    return null;
-  }
-
-  try {
-    // 1. Check project ID (required by Expo)
-    const projectId = Constants.expoConfig?.extra?.eas?.projectId;
-    if (!projectId) {
-      logger.warn("⚠️ No EAS projectId — cannot register token");
-      return null;
+    // ─── IN_APP channel: DB me save karo ───
+    if (channels.includes("IN_APP")) {
+      notification = await createNotification({
+        userId,
+        title,
+        message,
+        type,
+        data,
+        isRead: false,
+        channel: "IN_APP",
+        sentAt: new Date(),
+      });
     }
 
-    // 2. Get Expo push token
-    logger.log("🎫 Requesting Expo push token...");
-    const token = await Notifications.getExpoPushTokenAsync({ projectId });
-
-    logger.log("🎫 Expo Push Token:", token.data);
-
-    // 3. Send to backend
-    const res = await deviceApi.registerToken(token.data);
-    logger.log("✅ Token registered with backend:", res?.data);
-
-    return token.data;
-  } catch (err) {
-    logger.error("❌ Token register error:", err?.message);
-    logger.error("Full error:", err);
-    return null;
-  }
-};
-
-// ═══════════════════════════════════════════════════════════════
-// UNREGISTER TOKEN (on logout)
-// ═══════════════════════════════════════════════════════════════
-export const unregisterPushToken = async () => {
-  if (isExpoGo) return;
-
-  try {
-    const projectId = Constants.expoConfig?.extra?.eas?.projectId;
-    if (!projectId) return;
-
-    const token = await Notifications.getExpoPushTokenAsync({ projectId });
-    if (!token?.data) return;
-
-    // Call backend to delete
-    const { deviceApi } = require("../api/device");
-    if (deviceApi?.unregisterToken) {
-      await deviceApi.unregisterToken(token.data);
-      logger.log("✅ Token unregistered from backend");
-    }
-  } catch (err) {
-    logger.error("❌ Token unregister error:", err?.message);
-  }
-};
-
-// ═══════════════════════════════════════════════════════════════
-// SCHEDULE LOCAL NOTIFICATION — Booking Reminder
-// ═══════════════════════════════════════════════════════════════
-export const scheduleBookingReminder = async (booking) => {
-  if (isExpoGo) return null;
-
-  try {
-    const bookingDate = new Date(booking.bookingDate);
-    const reminderTime = new Date(bookingDate.getTime() - 60 * 60 * 1000);
-
-    if (reminderTime.getTime() <= Date.now()) {
-      logger.log("⏭️ Reminder time passed, skipping");
-      return null;
+    // ─── PUSH channel: Expo push bhejo ───
+    if (channels.includes("PUSH")) {
+      try {
+        await sendPushNotification(userId, title, message, data, type);
+      } catch (pushErr) {
+        logger.error(`Push failed for user ${userId}: ${pushErr.message}`);
+      }
     }
 
-    const id = await Notifications.scheduleNotificationAsync({
-      content: {
-        title: "⏰ Booking Reminder",
-        body: `Your booking at ${booking.placeName || "place"} starts in 1 hour!`,
-        data: {
-          type: "BOOKING",
-          bookingId: booking.id,
-          url: `localguider://booking/${booking.id}`,
-        },
-        sound: "default",
-        categoryIdentifier: "booking",
-      },
-      trigger: {
-        date: reminderTime,
-        channelId: "reminders",
-      },
-    });
-
-    logger.log("✅ Booking reminder scheduled:", id);
-    return id;
+    return notification;
   } catch (err) {
-    logger.error("❌ Schedule reminder error:", err);
-    return null;
+    logger.error(`addNotification failed: ${err.message}`);
+    throw err;
   }
 };
 
 // ═══════════════════════════════════════════════════════════════
-// CANCEL
+// FETCH MY NOTIFICATIONS (paginated)
 // ═══════════════════════════════════════════════════════════════
-export const cancelNotification = async (id) => {
-  if (isExpoGo || !id) return;
-  try {
-    await Notifications.cancelScheduledNotificationAsync(id);
-  } catch (err) {
-    logger.error("❌ Cancel notification error:", err);
-  }
+export const fetchMyNotifications = async (userId, { page, limit } = {}) => {
+  const { rows, count } = await getNotificationsByUser(userId, { page, limit });
+
+  const safeLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+  const safePage = Math.max(parseInt(page) || 1, 1);
+
+  return {
+    items: rows,
+    pagination: {
+      total: count,
+      page: safePage,
+      limit: safeLimit,
+      totalPages: Math.ceil(count / safeLimit),
+    },
+  };
 };
 
-export const cancelAllNotifications = async () => {
-  if (isExpoGo) return;
-  try {
-    await Notifications.cancelAllScheduledNotificationsAsync();
-  } catch (err) {
-    logger.error("❌ Cancel all error:", err);
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: FETCH ONE NOTIFICATION with full booking details
+// ═══════════════════════════════════════════════════════════════
+export const fetchNotificationDetail = async (id, userId) => {
+  const notification = await getNotificationWithDetails(id, userId);
+  if (!notification) {
+    throw new ApiError(404, "Notification not found");
   }
+  return notification;
 };
 
-export const dismissAllNotifications = async () => {
-  if (isExpoGo) return;
-  try {
-    await Notifications.dismissAllNotificationsAsync();
-  } catch (err) {
-    logger.error("❌ Dismiss error:", err);
+// ═══════════════════════════════════════════════════════════════
+// MARK AS READ
+// ═══════════════════════════════════════════════════════════════
+export const readNotification = async (id, userId) => {
+  const notification = await getNotificationById(id);
+  if (!notification) throw new ApiError(404, "Notification not found");
+  if (notification.userId !== userId) {
+    throw new ApiError(403, "Not allowed");
   }
+
+  await markNotificationRead(id, userId);
+  return await getNotificationById(id);
 };
 
-export const isNotificationsAvailable = () => !isExpoGo;
+// ═══════════════════════════════════════════════════════════════
+// MARK ALL AS READ
+// ═══════════════════════════════════════════════════════════════
+export const readAllNotifications = async (userId) => {
+  const [updated] = await markAllNotificationsRead(userId);
+  return {
+    message: `${updated} notification(s) marked as read`,
+    count: updated,
+  };
+};
 
-export default {
-  setupNotificationChannels,
-  requestNotificationPermissions,
-  registerPushToken,
-  unregisterPushToken,
-  scheduleBookingReminder,
-  cancelNotification,
-  cancelAllNotifications,
-  dismissAllNotifications,
-  isNotificationsAvailable,
+// ═══════════════════════════════════════════════════════════════
+// DELETE ONE
+// ═══════════════════════════════════════════════════════════════
+export const removeNotification = async (id, userId) => {
+  const notification = await getNotificationById(id);
+  if (!notification) throw new ApiError(404, "Notification not found");
+  if (notification.userId !== userId) {
+    throw new ApiError(403, "Not allowed");
+  }
+
+  await deleteNotification(id, userId);
+  return { message: "Notification deleted" };
+};
+
+// ═══════════════════════════════════════════════════════════════
+// DELETE ALL
+// ═══════════════════════════════════════════════════════════════
+export const removeAllNotifications = async (userId) => {
+  const count = await deleteAllNotifications(userId);
+  return { message: `${count} notification(s) deleted`, count };
+};
+
+// ═══════════════════════════════════════════════════════════════
+// UNREAD COUNT
+// ═══════════════════════════════════════════════════════════════
+export const fetchUnreadCount = async (userId) => {
+  return await getUnreadCount(userId);
 };
