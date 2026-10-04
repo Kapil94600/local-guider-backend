@@ -1,7 +1,8 @@
 // src/modules/places/place.service.js
 // ═══════════════════════════════════════════════════════════════
-// PLACE SERVICE — with nearby places
+// PLACE SERVICE — with nearby places + 404 fix
 // ═══════════════════════════════════════════════════════════════
+import { ApiError } from "../../utils/apiError.js";
 import {
   createPlace,
   getAllPlaces,
@@ -24,14 +25,14 @@ export const addPlace = async (payload) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// GET ALL (basic filter)
+// GET ALL
 // ═══════════════════════════════════════════════════════════════
 export const fetchPlaces = async ({ city, category, page, limit }) => {
   return await getAllPlaces({ city, category, page, limit });
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ NEW: GET NEARBY PLACES (tier-based sorting)
+// GET NEARBY PLACES (tier-based)
 // ═══════════════════════════════════════════════════════════════
 export const fetchNearbyPlaces = async ({
   lat,
@@ -68,11 +69,11 @@ export const searchPlacesService = async (q, city) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// GET BY ID
+// ✅ GET BY ID — 404 with ApiError (not generic Error)
 // ═══════════════════════════════════════════════════════════════
 export const fetchPlaceById = async (id) => {
   const place = await getPlaceById(id);
-  if (!place) throw new Error("Place not found");
+  if (!place) throw new ApiError(404, "Place not found");
   return place;
 };
 
@@ -81,7 +82,7 @@ export const fetchPlaceById = async (id) => {
 // ═══════════════════════════════════════════════════════════════
 export const updatePlace = async (id, payload) => {
   const place = await updatePlaceById(id, payload);
-  if (!place) throw new Error("Place not found");
+  if (!place) throw new ApiError(404, "Place not found");
   return place;
 };
 
@@ -90,27 +91,27 @@ export const updatePlace = async (id, payload) => {
 // ═══════════════════════════════════════════════════════════════
 export const removePlace = async (id) => {
   const result = await deletePlaceById(id);
-  if (!result) throw new Error("Place not found");
+  if (!result) throw new ApiError(404, "Place not found");
   return { message: "Place deleted successfully" };
 };
 
 // ═══════════════════════════════════════════════════════════════
-// GALLERY SERVICE
+// GALLERY
 // ═══════════════════════════════════════════════════════════════
 export const addGallery = async (placeId, imageUrl) => {
   const place = await addGalleryImage(placeId, imageUrl);
-  if (!place) throw new Error("Place not found");
+  if (!place) throw new ApiError(404, "Place not found");
   return place;
 };
 
 export const removeGallery = async (placeId, imageUrl) => {
   const place = await removeGalleryImage(placeId, imageUrl);
-  if (!place) throw new Error("Place not found");
+  if (!place) throw new ApiError(404, "Place not found");
   return place;
 };
 
 export const updateGallery = async (placeId, images) => {
   const place = await replaceGallery(placeId, images);
-  if (!place) throw new Error("Place not found");
+  if (!place) throw new ApiError(404, "Place not found");
   return place;
 };

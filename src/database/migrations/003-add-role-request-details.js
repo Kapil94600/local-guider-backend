@@ -1,6 +1,7 @@
 // src/database/migrations/003-add-role-request-details.js
 // ═══════════════════════════════════════════════════════════════
 // Add extra profile fields to role_requests
+// ✅ FIX: DATEONLY → DATE (postgres type)
 // ═══════════════════════════════════════════════════════════════
 export default {
   async up(queryInterface) {
@@ -24,16 +25,16 @@ export default {
       ADD COLUMN IF NOT EXISTS "alternatePhone" VARCHAR(20);
     `);
 
-    // ✅ Contact email (may differ from account email)
+    // ✅ Contact email
     await q(`
       ALTER TABLE role_requests
       ADD COLUMN IF NOT EXISTS email VARCHAR(255);
     `);
 
-    // ✅ Date of birth
+    // ✅ Date of birth — POSTGRES me DATE use karo (DATEONLY nahi)
     await q(`
       ALTER TABLE role_requests
-      ADD COLUMN IF NOT EXISTS "dateOfBirth" DATEONLY;
+      ADD COLUMN IF NOT EXISTS "dateOfBirth" DATE;
     `);
 
     // ✅ Gender
