@@ -1,4 +1,8 @@
 // src/modules/notifications/push.service.js
+// ═══════════════════════════════════════════════════════════════
+// PUSH SERVICE — Expo Push API with badge + grouping + cleanup
+// ✅ FULL LOGGING for debugging background delivery
+// ═══════════════════════════════════════════════════════════════
 import { Expo } from "expo-server-sdk";
 import Device from "../../database/models/core/Device.js";
 import Notification from "../../database/models/core/Notification.js";
@@ -63,8 +67,8 @@ const getChannelIdForType = (type) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// SEND PUSH NOTIFICATION
-// ✅ FIXED: Background delivery ke liye ttl, expiration, android, apns
+// SEND PUSH NOTIFICATION (single user)
+// ✅ FULL LOGGING + ttl + expiration + android + apns
 // ═══════════════════════════════════════════════════════════════
 export const sendPushNotification = async (
   userId,
@@ -73,29 +77,67 @@ export const sendPushNotification = async (
   data = {},
   type = "SYSTEM"
 ) => {
+  const shortUserId = userId ? userId.slice(0, 8) : "unknown";
+
   try {
+    console.log(`\n${"═".repeat(60)}`);
+    console.log(`📤 [PUSH] START — User: ${shortUserId}`);
+    console.log(`   Title : ${title}`);
+    console.log(`   Body  : ${body}`);
+    console.log(`   Type  : ${type}`);
+    console.log(`   Data  : ${JSON.stringify(data)}`);
+    console.log(`${"─".repeat(60)}`);
+
+    // ─── Step 1: Fetch devices ───
     const devices = await Device.findAll({ where: { userId } });
 
+    console.log(`📱 [PUSH] Devices found: ${devices.length}`);
+
     if (devices.length === 0) {
+      console.log(`⚠️ [PUSH] No devices registered for user ${shortUserId}`);
+      console.log(`   → User ne login kar ke token register nahi kiya`);
+      console.log(`${"═".repeat(60)}\n`);
       return { success: true, skipped: true, reason: "no-devices" };
     }
 
+    // ─── Step 2: Log each device ───
+    for (const device of devices) {
+      const tokenPreview = device.fcmToken
+        ? device.fcmToken.slice(0, 45) + "..."
+        : "(EMPTY)";
+      console.log(`   🔑 Device ${device.id.slice(0, 8)}:`);
+      console.log(`      Token: ${tokenPreview}`);
+      console.log(`      Last Active: ${device.lastActiveAt || "N/A"}`);
+    }
+
+    // ─── Step 3: Get badge count + grouping ───
     const unreadCount = await getUnreadCountForBadge(userId);
     const grouping = getGroupingMeta(type, data);
     const channelId = getChannelIdForType(type);
 
+    console.log(`🔔 [PUSH] Badge count: ${unreadCount}`);
+    console.log(`📢 [PUSH] Channel   : ${channelId}`);
+    if (grouping.collapseId) {
+      console.log(`🔗 [PUSH] collapseId: ${grouping.collapseId}`);
+    }
+
+    // ─── Step 4: Build messages ───
     const messages = [];
     const deviceMap = new Map();
-
-    // ✅ TTL: 1 hour
-    const TTL_SECONDS = 60 * 60;
+    const TTL_SECONDS = 60 * 60; // 1 hour
     const expirationTime = Math.floor(Date.now() / 1000) + TTL_SECONDS;
 
     for (const device of devices) {
       const token = device.fcmToken;
-      if (!token) continue;
+
+      if (!token) {
+        console.log(`   ⚠️ Skipping device ${device.id.slice(0, 8)} — no token`);
+        continue;
+      }
+
       if (!Expo.isExpoPushToken(token)) {
-        logger.warn(`Invalid Expo token for device ${device.id}`);
+        console.log(`   ❌ Invalid Expo token: ${token.slice(0, 50)}`);
+        console.log(`      → Token format galat hai (ExponentPushToken[...] nahi hai)`);
         continue;
       }
 
@@ -111,14 +153,13 @@ export const sendPushNotification = async (
         ttl: TTL_SECONDS,
         expiration: expirationTime,
 
-        // ✅ Android specific
+        // ✅ Android specific — lock screen pe bhi dikhe
         channelId,
         android: {
           priority: "high",
           ttl: TTL_SECONDS,
           channelId,
           sound: "default",
-          // ✅ Lock screen pe bhi dikhe
           notification: {
             channelId,
             priority: "max",
@@ -128,7 +169,7 @@ export const sendPushNotification = async (
           },
         },
 
-        // ✅ iOS specific (agar iOS bhi hai)
+        // ✅ iOS specific
         apns: {
           headers: {
             "apns-priority": "10",
@@ -153,15 +194,25 @@ export const sendPushNotification = async (
       deviceMap.set(token, device.id);
     }
 
+    console.log(`📨 [PUSH] Messages to send: ${messages.length}`);
+
     if (messages.length === 0) {
+      console.log(`⚠️ [PUSH] No valid tokens — nothing to send`);
+      console.log(`${"═".repeat(60)}\n`);
       return { success: true, skipped: true, reason: "no-valid-tokens" };
     }
 
+    // ─── Step 5: Send in chunks ───
     const chunks = expo.chunkPushNotifications(messages);
+    console.log(`📦 [PUSH] Chunks: ${chunks.length}`);
+
     const tickets = [];
     const invalidTokens = [];
 
-    for (const chunk of chunks) {
+    for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+      const chunk = chunks[chunkIdx];
+      console.log(`\n🚀 [PUSH] Sending chunk ${chunkIdx + 1}/${chunks.length} (${chunk.length} messages)...`);
+
       try {
         const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
         tickets.push(...ticketChunk);
@@ -170,39 +221,64 @@ export const sendPushNotification = async (
           const ticket = ticketChunk[i];
           const msg = chunk[i];
 
-          if (ticket.status === "error") {
+          if (ticket.status === "ok") {
+            console.log(`   ✅ Ticket ${i}: OK (id: ${ticket.id})`);
+          } else if (ticket.status === "error") {
             const errorCode = ticket.details?.error;
-            logger.warn(`Push ticket error: ${errorCode} — ${ticket.message}`);
+            console.log(`   ❌ Ticket ${i}: ERROR`);
+            console.log(`      Error code: ${errorCode}`);
+            console.log(`      Message   : ${ticket.message}`);
+            console.log(`      Token     : ${msg.to.slice(0, 45)}...`);
 
             if (errorCode === "DeviceNotRegistered") {
+              console.log(`      → Ye token invalid hai, delete karna hai`);
               invalidTokens.push(msg.to);
+            } else if (errorCode === "MessageTooBig") {
+              console.log(`      → Payload bahut bada hai`);
+            } else if (errorCode === "MessageRateExceeded") {
+              console.log(`      → Rate limit exceed ho gaya`);
+            } else if (errorCode === "MismatchSenderId") {
+              console.log(`      → FCM sender ID match nahi kar raha (google-services.json issue)`);
             }
           }
         }
       } catch (error) {
-        logger.error(`Chunk send error: ${error.message}`);
+        console.log(`   ❌ Chunk send error: ${error.message}`);
+        console.log(`      Stack: ${error.stack}`);
       }
     }
 
+    // ─── Step 6: Cleanup invalid tokens ───
     if (invalidTokens.length > 0) {
       try {
         await Device.destroy({ where: { fcmToken: invalidTokens } });
-        logger.info(`🗑️ Cleaned ${invalidTokens.length} invalid tokens`);
+        console.log(`🗑️ [PUSH] Cleaned ${invalidTokens.length} invalid tokens`);
       } catch (cleanupError) {
-        logger.error(`Token cleanup failed: ${cleanupError.message}`);
+        console.log(`❌ [PUSH] Token cleanup failed: ${cleanupError.message}`);
       }
     }
 
+    console.log(`\n✅ [PUSH] COMPLETE — User: ${shortUserId}`);
+    console.log(`   Total sent: ${messages.length}`);
+    console.log(`   Tickets   : ${tickets.length}`);
+    console.log(`   Invalid   : ${invalidTokens.length}`);
+    console.log(`${"═".repeat(60)}\n`);
+
     return { success: true, tickets, count: messages.length };
   } catch (error) {
-    logger.error(`❌ Push notification error: ${error.message}`);
+    console.log(`\n❌ [PUSH] FATAL ERROR`);
+    console.log(`   User   : ${shortUserId}`);
+    console.log(`   Message: ${error.message}`);
+    console.log(`   Stack  : ${error.stack}`);
+    console.log(`${"═".repeat(60)}\n`);
+
     return { success: false, error: error.message };
   }
 };
 
 // ═══════════════════════════════════════════════════════════════
 // SEND PUSH TO MULTIPLE USERS
-// ✅ FIXED: Background delivery ke liye ttl, expiration, android
+// ✅ FULL LOGGING + ttl + expiration + android + apns
 // ═══════════════════════════════════════════════════════════════
 export const sendPushToMany = async (
   userIds,
@@ -212,18 +288,43 @@ export const sendPushToMany = async (
   type = "SYSTEM"
 ) => {
   try {
+    console.log(`\n${"═".repeat(60)}`);
+    console.log(`📤 [PUSH-MANY] START`);
+    console.log(`   Users : ${userIds.length}`);
+    console.log(`   Title : ${title}`);
+    console.log(`   Type  : ${type}`);
+    console.log(`${"─".repeat(60)}`);
+
     const devices = await Device.findAll({
       where: { userId: userIds },
     });
+
+    console.log(`📱 [PUSH-MANY] Devices found: ${devices.length}`);
+
+    if (devices.length === 0) {
+      console.log(`⚠️ [PUSH-MANY] No devices for any user`);
+      console.log(`${"═".repeat(60)}\n`);
+      return { success: true, skipped: true, reason: "no-devices" };
+    }
 
     const messages = [];
     const channelId = getChannelIdForType(type);
     const TTL_SECONDS = 60 * 60;
     const expirationTime = Math.floor(Date.now() / 1000) + TTL_SECONDS;
 
+    let skippedInvalid = 0;
+
     for (const device of devices) {
       const token = device.fcmToken;
-      if (!token || !Expo.isExpoPushToken(token)) continue;
+      if (!token) {
+        skippedInvalid++;
+        continue;
+      }
+      if (!Expo.isExpoPushToken(token)) {
+        console.log(`   ❌ Invalid token for device ${device.id.slice(0, 8)}: ${token.slice(0, 40)}...`);
+        skippedInvalid++;
+        continue;
+      }
 
       messages.push({
         to: token,
@@ -239,6 +340,7 @@ export const sendPushToMany = async (
           priority: "high",
           ttl: TTL_SECONDS,
           channelId,
+          sound: "default",
         },
         apns: {
           headers: {
@@ -255,7 +357,12 @@ export const sendPushToMany = async (
       });
     }
 
+    console.log(`📨 [PUSH-MANY] Valid messages: ${messages.length}`);
+    console.log(`   Skipped (invalid/empty): ${skippedInvalid}`);
+
     if (messages.length === 0) {
+      console.log(`⚠️ [PUSH-MANY] No valid messages to send`);
+      console.log(`${"═".repeat(60)}\n`);
       return { success: true, skipped: true };
     }
 
@@ -263,32 +370,47 @@ export const sendPushToMany = async (
     const tickets = [];
     const invalidTokens = [];
 
-    for (const chunk of chunks) {
+    for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+      const chunk = chunks[chunkIdx];
+      console.log(`🚀 [PUSH-MANY] Chunk ${chunkIdx + 1}/${chunks.length} (${chunk.length})...`);
+
       try {
         const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
         tickets.push(...ticketChunk);
 
         for (let i = 0; i < ticketChunk.length; i++) {
           const ticket = ticketChunk[i];
-          if (
-            ticket.status === "error" &&
-            ticket.details?.error === "DeviceNotRegistered"
-          ) {
-            invalidTokens.push(chunk[i].to);
+          if (ticket.status === "ok") {
+            console.log(`   ✅ Ticket ${i}: OK`);
+          } else if (ticket.status === "error") {
+            const errorCode = ticket.details?.error;
+            console.log(`   ❌ Ticket ${i}: ${errorCode} — ${ticket.message}`);
+
+            if (errorCode === "DeviceNotRegistered") {
+              invalidTokens.push(chunk[i].to);
+            }
           }
         }
       } catch (err) {
-        logger.error(`Bulk chunk error: ${err.message}`);
+        console.log(`   ❌ Chunk error: ${err.message}`);
       }
     }
 
     if (invalidTokens.length > 0) {
       await Device.destroy({ where: { fcmToken: invalidTokens } });
+      console.log(`🗑️ [PUSH-MANY] Cleaned ${invalidTokens.length} invalid tokens`);
     }
+
+    console.log(`\n✅ [PUSH-MANY] COMPLETE`);
+    console.log(`   Sent    : ${messages.length}`);
+    console.log(`   Tickets : ${tickets.length}`);
+    console.log(`   Invalid : ${invalidTokens.length}`);
+    console.log(`${"═".repeat(60)}\n`);
 
     return { success: true, tickets, count: messages.length };
   } catch (error) {
-    logger.error(`❌ sendPushToMany error: ${error.message}`);
+    console.log(`\n❌ [PUSH-MANY] FATAL: ${error.message}`);
+    console.log(`${"═".repeat(60)}\n`);
     return { success: false, error: error.message };
   }
 };
