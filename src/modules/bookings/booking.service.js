@@ -1,6 +1,7 @@
 // src/modules/bookings/booking.service.js
 // ═══════════════════════════════════════════════════════════════
 // BOOKING SERVICE — full status flow + OTP + refunds + notifications
+// ✅ UPDATED: Rich push notifications with full booking details
 // ═══════════════════════════════════════════════════════════════
 import {
   createBooking,
@@ -53,7 +54,44 @@ const ALLOWED_TRANSITIONS = {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// resolveProviderUser — SYNC (no DB queries)
+// HELPERS — for rich notification text
+// ═══════════════════════════════════════════════════════════════
+const formatBookingDate = (date) => {
+  try {
+    return new Date(date).toLocaleString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "N/A";
+  }
+};
+
+const getCustomerName = (user) => {
+  if (!user) return "A customer";
+  const name = `${user.firstName || ""} ${user.lastName || ""}`.trim();
+  return name || "A customer";
+};
+
+const getProviderName = (guider, photographer) => {
+  if (guider?.fullName) return guider.fullName;
+  if (photographer?.fullName) return photographer.fullName;
+  if (guider?.User) {
+    return `${guider.User.firstName || ""} ${guider.User.lastName || ""}`.trim();
+  }
+  if (photographer?.User) {
+    return `${photographer.User.firstName || ""} ${
+      photographer.User.lastName || ""
+    }`.trim();
+  }
+  return "Provider";
+};
+
+// ═══════════════════════════════════════════════════════════════
+// resolveProviderUser — SYNC
 // ═══════════════════════════════════════════════════════════════
 export const resolveProviderUser = (booking) => {
   if (!booking) return null;
@@ -180,6 +218,106 @@ const checkBookingConflict = async (
 };
 
 // ═══════════════════════════════════════════════════════════════
+// ✅ HELPER: Notify all admins about a booking
+// ═══════════════════════════════════════════════════════════════
+const notifyAllAdmins = async ({
+  title,
+  message,
+  bookingId,
+  status = null,
+}) => {
+  try {
+    const admins = await User.findAll({
+      where: {
+        role: "ADMIN",
+        isActive: true,
+      },
+      attributes: ["id", "firstName", "email"],
+    });
+
+    if (admins.length === 0) {
+      logger.warn(`⚠️ No active admins to notify about booking ${bookingId}`);
+      return;
+    }
+
+    logger.info(
+      `📢 Notifying ${admins.length} admin(s) about booking ${bookingId.slice(0, 8)}`
+    );
+
+    for (const admin of admins) {
+      try {
+        await addNotification({
+          userId: admin.id,
+          title,
+          message,
+          type: "BOOKING",
+          data: {
+            bookingId,
+            status,
+            url: `localguider://booking/${bookingId}`,
+          },
+          channels: ["IN_APP", "PUSH"],
+        });
+      } catch (e) {
+        logger.error(
+          `Failed to notify admin ${admin.id.slice(0, 8)}: ${e.message}`
+        );
+      }
+    }
+  } catch (err) {
+    logger.error(`notifyAllAdmins error: ${err.message}`);
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ HELPER: Build rich push text for booking
+// ═══════════════════════════════════════════════════════════════
+const buildBookingPushText = ({
+  customerName,
+  placeName,
+  providerName,
+  providerRole,
+  bookingDate,
+  amount,
+  status = "PENDING",
+}) => {
+  const roleLabel = providerRole === "GUIDER" ? "Guider" : "Photographer";
+  const dateStr = formatBookingDate(bookingDate);
+  const amountStr = `₹${parseFloat(amount || 0).toFixed(0)}`;
+
+  let title = "";
+  let body = "";
+
+  switch (status) {
+    case "PENDING":
+      title = `📅 New Booking from ${customerName}`;
+      body = `${placeName} · ${roleLabel}: ${providerName} · ${dateStr} · ${amountStr}`;
+      break;
+    case "APPROVED":
+      title = `✅ Booking Approved`;
+      body = `${customerName} → ${placeName} · ${dateStr} · ${amountStr}`;
+      break;
+    case "PAID":
+      title = `💰 Payment Received`;
+      body = `${customerName} paid ${amountStr} for ${placeName} · ${dateStr}`;
+      break;
+    case "CANCELLED":
+      title = `❌ Booking Cancelled`;
+      body = `${customerName} cancelled ${placeName} · ${dateStr}`;
+      break;
+    case "COMPLETED":
+      title = `🎉 Booking Completed`;
+      body = `${customerName} → ${placeName} · ${roleLabel}: ${providerName}`;
+      break;
+    default:
+      title = `Booking Update`;
+      body = `${customerName} → ${placeName} · ${dateStr}`;
+  }
+
+  return { title, body };
+};
+
+// ═══════════════════════════════════════════════════════════════
 // ADD BOOKING
 // ═══════════════════════════════════════════════════════════════
 export const addBooking = async (userId, payload) => {
@@ -189,30 +327,88 @@ export const addBooking = async (userId, payload) => {
   let duration = 0;
   let providerUserId = null;
 
+  // ✅ Fetch customer for notification text
+  const customer = await User.findByPk(userId, {
+    attributes: ["id", "firstName", "lastName", "email", "phone"],
+  });
+  const customerName = getCustomerName(customer);
+
+  // ✅ Fetch place name
+  let placeName = "Unknown Place";
+  if (payload.placeId) {
+    const Place = (await import("../../database/models/core/Place.js"))
+      .default;
+    const place = await Place.findByPk(payload.placeId, {
+      attributes: ["id", "name"],
+    });
+    if (place) placeName = place.name;
+  }
+
+  // ✅ Fetch provider details
+  let providerName = "Provider";
+  let providerRole = "GUIDER";
+
   if (payload.guiderPlanId) {
-    const plan = await GuiderPlan.findByPk(payload.guiderPlanId);
+    const plan = await GuiderPlan.findByPk(payload.guiderPlanId, {
+      include: [
+        {
+          model: Guider,
+          as: "guider",
+          attributes: ["id", "userId", "fullName"],
+          include: [
+            {
+              model: User,
+              attributes: ["id", "firstName", "lastName"],
+            },
+          ],
+        },
+      ],
+    });
+
     if (plan) {
       totalAmount += parseFloat(plan.price) || 0;
       providerId = plan.guiderId;
       providerType = "GUIDER";
+      providerRole = "GUIDER";
       duration = plan.duration || 0;
 
-      const guider = await Guider.findByPk(plan.guiderId);
-      if (guider) providerUserId = guider.userId;
+      if (plan.guider) {
+        providerUserId = plan.guider.userId;
+        providerName = getProviderName(plan.guider, null);
+      }
     }
   } else if (payload.photographerPlanId) {
-    const plan = await PhotographerPlan.findByPk(payload.photographerPlanId);
+    const plan = await PhotographerPlan.findByPk(payload.photographerPlanId, {
+      include: [
+        {
+          model: Photographer,
+          as: "photographer",
+          attributes: ["id", "userId", "fullName"],
+          include: [
+            {
+              model: User,
+              attributes: ["id", "firstName", "lastName"],
+            },
+          ],
+        },
+      ],
+    });
+
     if (plan) {
       totalAmount += parseFloat(plan.price) || 0;
       providerId = plan.photographerId;
       providerType = "PHOTOGRAPHER";
+      providerRole = "PHOTOGRAPHER";
       duration = plan.duration || 0;
 
-      const photographer = await Photographer.findByPk(plan.photographerId);
-      if (photographer) providerUserId = photographer.userId;
+      if (plan.photographer) {
+        providerUserId = plan.photographer.userId;
+        providerName = getProviderName(null, plan.photographer);
+      }
     }
   }
 
+  // Conflict check
   if (providerId && duration > 0 && payload.bookingDate) {
     const conflict = await checkBookingConflict(
       providerId,
@@ -261,42 +457,82 @@ export const addBooking = async (userId, payload) => {
 
   const bookingIdShort = booking.id.slice(0, 8);
 
-  // Notify provider
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ RICH NOTIFICATIONS
+  // ═══════════════════════════════════════════════════════════════
+
+  // ── 1. Notify PROVIDER with full details ──
   if (providerUserId) {
     try {
-      const customer = await User.findByPk(userId, {
-        attributes: ["id", "firstName", "lastName"],
+      const pushText = buildBookingPushText({
+        customerName,
+        placeName,
+        providerName,
+        providerRole,
+        bookingDate: payload.bookingDate,
+        amount: totalAmount,
+        status: "PENDING",
       });
-      const customerName = customer
-        ? `${customer.firstName || ""} ${customer.lastName || ""}`.trim() ||
-          "Customer"
-        : "Customer";
 
       await addNotification({
         userId: providerUserId,
-        title: "New Booking Request",
-        message: `${customerName} requested a booking (#${bookingIdShort}). Please review and respond.`,
+        title: pushText.title,
+        message: pushText.body,
         type: "BOOKING",
-        data: { bookingId: booking.id, status: "PENDING" },
+        data: {
+          bookingId: booking.id,
+          status: "PENDING",
+          url: `localguider://booking/${booking.id}`,
+        },
         channels: ["IN_APP", "PUSH"],
       });
+
+      logger.info(
+        `📢 Provider notified: ${providerName} (${providerUserId.slice(0, 8)})`
+      );
     } catch (notifErr) {
       logger.error(`Provider booking notification failed: ${notifErr.message}`);
     }
   }
 
-  // Notify customer
+  // ── 2. Notify CUSTOMER (confirmation) ──
   try {
     await addNotification({
       userId,
-      title: "Booking Created",
-      message: `Your booking #${bookingIdShort} has been created. Waiting for provider confirmation.`,
+      title: "✅ Booking Created",
+      message: `Your booking for ${placeName} with ${providerName} has been sent. Waiting for approval.`,
       type: "BOOKING",
-      data: { bookingId: booking.id, status: "PENDING" },
+      data: {
+        bookingId: booking.id,
+        status: "PENDING",
+        url: `localguider://booking/${booking.id}`,
+      },
       channels: ["IN_APP", "PUSH"],
     });
   } catch (notifErr) {
     logger.error(`Customer booking notification failed: ${notifErr.message}`);
+  }
+
+  // ── 3. ✅ Notify ALL ADMINS with full details ──
+  try {
+    const pushText = buildBookingPushText({
+      customerName,
+      placeName,
+      providerName,
+      providerRole,
+      bookingDate: payload.bookingDate,
+      amount: totalAmount,
+      status: "PENDING",
+    });
+
+    await notifyAllAdmins({
+      title: pushText.title,
+      message: pushText.body,
+      bookingId: booking.id,
+      status: "PENDING",
+    });
+  } catch (notifErr) {
+    logger.error(`Admin booking notification failed: ${notifErr.message}`);
   }
 
   return booking;
@@ -355,11 +591,10 @@ export const changeBookingStatus = async (
     throw new ApiError(400, "Invalid status");
   }
 
-  // STEP 1: Fetch booking OUTSIDE transaction
   const booking = await getBookingById(id);
   if (!booking) throw new ApiError(404, "Booking not found");
 
-  // STEP 2: Role-based transition check
+  // Role-based transition check
   if (initiatorId && initiatorRole) {
     let actor = "CUSTOMER";
     if (initiatorRole === "ADMIN") actor = "ADMIN";
@@ -378,7 +613,6 @@ export const changeBookingStatus = async (
 
   const previousStatus = booking.status;
 
-  // STEP 3: Transaction
   const t = await sequelize.transaction();
 
   try {
@@ -405,7 +639,7 @@ export const changeBookingStatus = async (
 
     await lockedBooking.update(updatePayload, { transaction: t });
 
-    // Record status change in history
+    // Record status change
     try {
       let changedByRole = "SYSTEM";
       if (initiatorRole === "ADMIN") changedByRole = "ADMIN";
@@ -435,7 +669,7 @@ export const changeBookingStatus = async (
       );
     }
 
-    // REFUND logic
+    // Refund logic
     if (status === "CANCELLED" || status === "REJECTED") {
       const isPaidBooking =
         lockedBooking.status === "PAID" ||
@@ -469,10 +703,25 @@ export const changeBookingStatus = async (
     throw error;
   }
 
-  // STEP 4: Notifications + Socket (OUTSIDE transaction)
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ NOTIFICATIONS (outside transaction)
+  // ═══════════════════════════════════════════════════════════════
   const updatedBooking = await getBookingById(id);
-  const customer = await User.findByPk(booking.userId);
+  const customer = await User.findByPk(booking.userId, {
+    attributes: ["id", "firstName", "lastName"],
+  });
   const providerUser = resolveProviderUser(updatedBooking);
+
+  const customerName = getCustomerName(customer);
+  const placeName = updatedBooking.place?.name || "Unknown Place";
+  const providerName = getProviderName(
+    updatedBooking.guiderPlan?.guider,
+    updatedBooking.photographerPlan?.photographer
+  );
+  const providerRole = updatedBooking.guiderPlanId
+    ? "GUIDER"
+    : "PHOTOGRAPHER";
+
   const bookingIdShort = booking.id.slice(0, 8);
   const statusLower = status.toLowerCase();
 
@@ -480,19 +729,29 @@ export const changeBookingStatus = async (
     ? String(notes).replace(/\b\d{6}\b/g, "[hidden]")
     : null;
 
-  // Notify customer
+  const pushText = buildBookingPushText({
+    customerName,
+    placeName,
+    providerName,
+    providerRole,
+    bookingDate: booking.bookingDate,
+    amount: booking.totalAmount,
+    status,
+  });
+
+  // ── Notify CUSTOMER ──
   if (customer && customer.id !== initiatorId) {
     let title = `Booking ${statusLower}`;
     let message = `Your booking #${bookingIdShort} has been ${statusLower}.`;
 
     if (status === "APPROVED") {
       title = "Booking Approved 🎉";
-      message = `Provider accepted your booking #${bookingIdShort}. Please pay ₹${booking.totalAmount} to confirm.`;
+      message = `Provider accepted your booking for ${placeName}. Please pay ₹${booking.totalAmount} to confirm.`;
     } else if (status === "PAID") {
       title = "Payment Confirmed ✅";
-      message = `Payment received for booking #${bookingIdShort}. Your booking is confirmed!`;
+      message = `Payment received for ${placeName}. Your booking is confirmed!`;
     } else if (status === "CANCELLED" && previousStatus === "PAID") {
-      message = `Your booking #${bookingIdShort} was cancelled. ₹${booking.totalAmount} has been refunded to your wallet.`;
+      message = `Your booking for ${placeName} was cancelled. ₹${booking.totalAmount} has been refunded to your wallet.`;
     } else if (safeNotes) {
       message += ` Reason: ${safeNotes}`;
     }
@@ -503,7 +762,11 @@ export const changeBookingStatus = async (
         title,
         message,
         type: "BOOKING",
-        data: { bookingId: booking.id, status },
+        data: {
+          bookingId: booking.id,
+          status,
+          url: `localguider://booking/${booking.id}`,
+        },
         channels: ["IN_APP", "PUSH"],
       });
     } catch (e) {
@@ -511,28 +774,23 @@ export const changeBookingStatus = async (
     }
   }
 
-  // Notify provider
+  // ── Notify PROVIDER ──
   if (providerUser && providerUser.id !== initiatorId) {
-    let title, message;
+    let title = `Booking ${statusLower}`;
+    let message = `Booking #${bookingIdShort} status changed to ${statusLower}.`;
+
     if (status === "APPROVED") {
       title = "Booking Approved";
-      message = `You approved booking #${bookingIdShort}. Customer will pay shortly.`;
+      message = `You approved booking for ${placeName} from ${customerName}.`;
     } else if (status === "REJECTED") {
       title = "Booking Rejected";
-      message = `You rejected booking #${bookingIdShort}. Reason: ${
-        safeNotes || "No reason"
-      }`;
+      message = `You rejected booking from ${customerName} for ${placeName}.`;
     } else if (status === "CANCELLED") {
       title = "Booking Cancelled";
-      message = `Booking #${bookingIdShort} was cancelled. Reason: ${
-        safeNotes || "No reason"
-      }`;
+      message = `Booking from ${customerName} for ${placeName} was cancelled.`;
     } else if (status === "PAID") {
       title = "Booking Paid 💰";
-      message = `Customer paid for booking #${bookingIdShort}. You can proceed with the trip.`;
-    } else {
-      title = `Booking ${statusLower}`;
-      message = `Booking #${bookingIdShort} status changed to ${statusLower}.`;
+      message = `${customerName} paid ₹${booking.totalAmount} for ${placeName}. You can proceed with the trip.`;
     }
 
     try {
@@ -541,7 +799,11 @@ export const changeBookingStatus = async (
         title,
         message,
         type: "BOOKING",
-        data: { bookingId: booking.id, status },
+        data: {
+          bookingId: booking.id,
+          status,
+          url: `localguider://booking/${booking.id}`,
+        },
         channels: ["IN_APP", "PUSH"],
       });
     } catch (e) {
@@ -549,7 +811,19 @@ export const changeBookingStatus = async (
     }
   }
 
-  // Socket emit
+  // ── ✅ Notify ADMINS on every status change ──
+  try {
+    await notifyAllAdmins({
+      title: pushText.title,
+      message: pushText.body,
+      bookingId: booking.id,
+      status,
+    });
+  } catch (e) {
+    logger.error(`Admin notification failed: ${e.message}`);
+  }
+
+  // ── Socket emit ──
   try {
     const { getIO } = await import("../../socket.js");
     const io = getIO?.();
@@ -607,7 +881,6 @@ export const cancelMyBooking = async (userId, bookingId, reason = null) => {
 
 // ═══════════════════════════════════════════════════════════════
 // REQUEST COMPLETION (OTP generation)
-// ✅ FIX: OTP not leaked to push notification
 // ═══════════════════════════════════════════════════════════════
 export const requestCompletion = async (providerId, bookingId, role) => {
   const booking = await getBookingById(bookingId);
@@ -643,7 +916,7 @@ export const requestCompletion = async (providerId, bookingId, role) => {
     console.log("═══════════════════════════════════════");
     console.log("🔑 COMPLETION OTP GENERATED");
     console.log("   Booking ID:", bookingId);
-    console.log("   OTP       :", otp, "(SIRF customer ko)");
+    console.log("   OTP       :", otp, "(only for customer)");
     console.log("   Expires At:", expiresAt.toISOString());
     console.log("═══════════════════════════════════════");
   }
@@ -658,12 +931,10 @@ export const requestCompletion = async (providerId, bookingId, role) => {
         message: `Your booking #${booking.id.slice(
           0,
           8
-        )} is being completed. Your OTP is: ${otp}. Share it ONLY with your provider.`,
+        )} is being completed. Your OTP is: ${otp}. Share ONLY with your provider.`,
         type: "BOOKING",
-        // ✅ FIX: OTP NOT in data (prevents push leak)
         data: { bookingId: booking.id },
-        // ✅ FIX: Only IN_APP — no PUSH for OTP
-        channels: ["IN_APP"],
+        channels: ["IN_APP"], // Only in-app, no push
       });
     } catch (e) {
       logger.error(`Customer OTP notification failed: ${e.message}`);
@@ -676,7 +947,7 @@ export const requestCompletion = async (providerId, bookingId, role) => {
       await addNotification({
         userId: providerUser.id,
         title: "OTP Sent to Customer",
-        message: `OTP has been sent to the customer for booking #${booking.id.slice(
+        message: `OTP sent to customer for booking #${booking.id.slice(
           0,
           8
         )}. Ask them to share it with you.`,
@@ -694,7 +965,6 @@ export const requestCompletion = async (providerId, bookingId, role) => {
 
 // ═══════════════════════════════════════════════════════════════
 // VERIFY COMPLETION
-// ✅ FIX: Use `updated` instance, not stale `booking`
 // ═══════════════════════════════════════════════════════════════
 export const verifyCompletion = async (userId, bookingId, otp) => {
   const booking = await getBookingById(bookingId);
@@ -718,7 +988,6 @@ export const verifyCompletion = async (userId, bookingId, otp) => {
     throw new ApiError(400, "Invalid or expired OTP");
   }
 
-  // ✅ FIX: changeBookingStatus returns the updated booking instance
   const updated = await changeBookingStatus(
     bookingId,
     "COMPLETED",
@@ -727,7 +996,6 @@ export const verifyCompletion = async (userId, bookingId, otp) => {
     "PROVIDER"
   );
 
-  // ✅ FIX: Update the returned instance (not the stale `booking`)
   await updated.update({
     completionOtpVerified: true,
     completionOtp: null,
