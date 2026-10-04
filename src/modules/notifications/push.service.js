@@ -64,6 +64,7 @@ const getChannelIdForType = (type) => {
 
 // ═══════════════════════════════════════════════════════════════
 // SEND PUSH NOTIFICATION
+// ✅ FIXED: Background delivery ke liye ttl, expiration, android, apns
 // ═══════════════════════════════════════════════════════════════
 export const sendPushNotification = async (
   userId,
@@ -86,6 +87,10 @@ export const sendPushNotification = async (
     const messages = [];
     const deviceMap = new Map();
 
+    // ✅ TTL: 1 hour
+    const TTL_SECONDS = 60 * 60;
+    const expirationTime = Math.floor(Date.now() / 1000) + TTL_SECONDS;
+
     for (const device of devices) {
       const token = device.fcmToken;
       if (!token) continue;
@@ -100,8 +105,44 @@ export const sendPushNotification = async (
         title,
         body,
         data: { ...data, type },
+
+        // ✅ CRITICAL: Background delivery
         priority: "high",
+        ttl: TTL_SECONDS,
+        expiration: expirationTime,
+
+        // ✅ Android specific
         channelId,
+        android: {
+          priority: "high",
+          ttl: TTL_SECONDS,
+          channelId,
+          sound: "default",
+          // ✅ Lock screen pe bhi dikhe
+          notification: {
+            channelId,
+            priority: "max",
+            defaultSound: true,
+            defaultVibrateTimings: true,
+            visibility: "public",
+          },
+        },
+
+        // ✅ iOS specific (agar iOS bhi hai)
+        apns: {
+          headers: {
+            "apns-priority": "10",
+            "apns-push-type": "alert",
+          },
+          payload: {
+            aps: {
+              sound: "default",
+              badge: unreadCount,
+              "content-available": 1,
+            },
+          },
+        },
+
         badge: unreadCount,
         _displayInForeground: true,
         ...(grouping.collapseId && { collapseId: grouping.collapseId }),
@@ -161,6 +202,7 @@ export const sendPushNotification = async (
 
 // ═══════════════════════════════════════════════════════════════
 // SEND PUSH TO MULTIPLE USERS
+// ✅ FIXED: Background delivery ke liye ttl, expiration, android
 // ═══════════════════════════════════════════════════════════════
 export const sendPushToMany = async (
   userIds,
@@ -176,6 +218,8 @@ export const sendPushToMany = async (
 
     const messages = [];
     const channelId = getChannelIdForType(type);
+    const TTL_SECONDS = 60 * 60;
+    const expirationTime = Math.floor(Date.now() / 1000) + TTL_SECONDS;
 
     for (const device of devices) {
       const token = device.fcmToken;
@@ -188,7 +232,26 @@ export const sendPushToMany = async (
         body,
         data: { ...data, type },
         priority: "high",
+        ttl: TTL_SECONDS,
+        expiration: expirationTime,
         channelId,
+        android: {
+          priority: "high",
+          ttl: TTL_SECONDS,
+          channelId,
+        },
+        apns: {
+          headers: {
+            "apns-priority": "10",
+            "apns-push-type": "alert",
+          },
+          payload: {
+            aps: {
+              sound: "default",
+              "content-available": 1,
+            },
+          },
+        },
       });
     }
 
