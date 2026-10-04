@@ -11,7 +11,7 @@ const Device = sequelize.define(
       primaryKey: true,
     },
 
-    // ✅ CRITICAL: userId was missing — now added
+    // ✅ CRITICAL: userId is required
     userId: {
       type: DataTypes.UUID,
       allowNull: false,
@@ -37,9 +37,13 @@ const Device = sequelize.define(
       allowNull: true,
     },
 
-    // Expo push token / FCM token
+    // ═══════════════════════════════════════════════════════════
+    // ✅ CRITICAL FIX: fcmToken MUST be TEXT (not VARCHAR)
+    // Expo Push Tokens are ~50-60 characters long
+    // VARCHAR(50) would TRUNCATE the token and break push
+    // ═══════════════════════════════════════════════════════════
     fcmToken: {
-      type: DataTypes.TEXT,
+      type: DataTypes.TEXT,  // ← ✅ TEXT — no length limit
       allowNull: false,
     },
 
@@ -53,7 +57,6 @@ const Device = sequelize.define(
     timestamps: true,
     indexes: [
       {
-        // ✅ One token per user — prevent duplicates
         unique: true,
         fields: ["userId", "fcmToken"],
         name: "devices_user_token_unique",
