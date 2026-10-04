@@ -5,6 +5,7 @@ import { logger } from "../../utils/logger.js";
 
 // ═══════════════════════════════════════════════════════════════
 // REGISTER / UPDATE DEVICE TOKEN
+// ✅ FIXED: NO truncation, full logging
 // ═══════════════════════════════════════════════════════════════
 export const registerDeviceToken = async (userId, token, metadata = {}) => {
   // ─── Validate ───
@@ -12,24 +13,38 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
     throw new ApiError(400, "Token is required");
   }
 
-  // ⚠️ CRITICAL: Token TRUNCATE bilkul nahi karna
-  const cleanToken = token.trim(); // ← sirf whitespace hatao, slice MAT karo
+  // ✅ CRITICAL: sirf trim karo, slice/substring MAT karo
+  const cleanToken = token.trim();
 
-  // ✅ Token length log karo (debug ke liye)
-  logger.info(
-    `📱 [Device] Registering token for user ${userId.slice(0, 8)} — length: ${cleanToken.length} chars`
-  );
+  // ═══════════════════════════════════════════════════════════
+  // ✅ FULL LOGGING — Debug ke liye
+  // ═══════════════════════════════════════════════════════════
+  console.log("═══════════════════════════════════════════════════");
+  console.log("📱 [Device] REGISTER TOKEN REQUEST");
+  console.log("   User ID       :", userId);
+  console.log("   Token         :", cleanToken);
+  console.log("   Token Length  :", cleanToken.length);
+  console.log("   Token Starts  :", cleanToken.substring(0, 30));
+  console.log("   Token Ends    :", cleanToken.slice(-30));
+  console.log("   Metadata      :", JSON.stringify(metadata));
+  console.log("═══════════════════════════════════════════════════");
 
-  // ⚠️ Warning agar token chhota hai
+  // ─── Warning: chhota token ───
   if (cleanToken.length < 50) {
+    console.log(
+      `⚠️ [Device] Token SUSPICIOUSLY SHORT: ${cleanToken.length} chars`
+    );
     logger.warn(
-      `⚠️ [Device] Token suspiciously short: ${cleanToken.length} chars — ${cleanToken}`
+      `⚠️ [Device] Token short: ${cleanToken.length} chars — ${cleanToken}`
     );
   }
 
-  // ⚠️ Warning agar token `]` ke baad kuch nahi (truncated)
-  if (cleanToken.endsWith("]") && !cleanToken.includes("]")) {
-    logger.warn(`⚠️ [Device] Token appears truncated: ${cleanToken}`);
+  // ─── Warning: truncated token ───
+  if (cleanToken.endsWith("]") && cleanToken.includes("ExponentPushToken[")) {
+    const innerLength = cleanToken.length - "ExponentPushToken[]".length;
+    console.log(
+      `⚠️ [Device] Token TRUNCATED? Inner length: ${innerLength} chars (expected ~22)`
+    );
   }
 
   // ─── Upsert (create or update) ───
@@ -48,18 +63,36 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
     });
 
     if (!created) {
-      // Update lastActiveAt
       await device.update({ lastActiveAt: new Date() });
-      logger.info(`📱 [Device] Existing token updated for user ${userId.slice(0, 8)}`);
+      console.log(
+        `✅ [Device] Existing token updated — user: ${userId.slice(0, 8)}, token length: ${device.fcmToken.length}`
+      );
+      logger.info(
+        `📱 [Device] Existing token updated for ${userId.slice(0, 8)}`
+      );
     } else {
-      logger.info(`📱 [Device] New token registered for user ${userId.slice(0, 8)}`);
+      console.log(
+        `✅ [Device] NEW token registered — user: ${userId.slice(0, 8)}, token length: ${device.fcmToken.length}`
+      );
+      logger.info(`📱 [Device] New token registered for ${userId.slice(0, 8)}`);
     }
 
-    return device;
+    // ═══════════════════════════════════════════════════════════
+    // ✅ Verify — DB se wapas fetch karo
+    // ═══════════════════════════════════════════════════════════
+    const savedDevice = await Device.findByPk(device.id);
+    console.log("═══════════════════════════════════════════════════");
+    console.log("🔍 [Device] VERIFY FROM DB");
+    console.log("   Saved Token   :", savedDevice.fcmToken);
+    console.log("   Saved Length  :", savedDevice.fcmToken.length);
+    console.log("   Match         :", savedDevice.fcmToken === cleanToken);
+    console.log("═══════════════════════════════════════════════════");
+
+    return savedDevice;
   } catch (err) {
-    // Agar unique constraint error hai to existing device update karo
+    // Handle unique constraint
     if (err.name === "SequelizeUniqueConstraintError") {
-      logger.info(`📱 [Device] Token already exists for user ${userId.slice(0, 8)}`);
+      logger.info(`📱 [Device] Token exists for user ${userId.slice(0, 8)}`);
       const existing = await Device.findOne({
         where: { userId, fcmToken: cleanToken },
       });
@@ -68,6 +101,7 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
         return existing;
       }
     }
+    console.error("❌ [Device] Register error:", err.message);
     throw err;
   }
 };
@@ -78,11 +112,17 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
 export const unregisterDeviceToken = async (userId, token) => {
   if (!token) throw new ApiError(400, "Token is required");
 
+  console.log(
+    `🔓 [Device] Unregistering token for user ${userId.slice(0, 8)} — length: ${token.length}`
+  );
+
   const deleted = await Device.destroy({
     where: { userId, fcmToken: token },
   });
 
-  logger.info(`📱 [Device] Unregistered ${deleted} token(s) for user ${userId.slice(0, 8)}`);
+  logger.info(
+    `📱 [Device] Unregistered ${deleted} token(s) for ${userId.slice(0, 8)}`
+  );
   return { deleted };
 };
 
@@ -97,19 +137,21 @@ export const getUserDevices = async (userId) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// CLEANUP INVALID TOKENS (admin utility)
+// CLEANUP INVALID / TRUNCATED TOKENS (admin utility)
 // ═══════════════════════════════════════════════════════════════
 export const cleanupInvalidTokens = async () => {
   const { Op } = await import("sequelize");
+
+  // Delete tokens that are truncated or invalid
   const deleted = await Device.destroy({
     where: {
       [Op.or]: [
-        { fcmToken: { [Op.like]: "%]" } },           // Truncated tokens ending with ]
-        { fcmToken: { [Op.like]: "ExponentPushToken[]" } }, // Empty tokens
+        { fcmToken: "ExponentPushToken[]" }, // Empty tokens
       ],
     },
   });
-  logger.info(`🧹 [Device] Cleaned up ${deleted} invalid tokens`);
+
+  logger.info(`🧹 [Device] Cleaned ${deleted} invalid tokens`);
   return { deleted };
 };
 
