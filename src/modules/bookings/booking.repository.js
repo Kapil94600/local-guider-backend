@@ -1,4 +1,13 @@
 // src/modules/bookings/booking.repository.js
+// ═══════════════════════════════════════════════════════════════
+// BOOKING REPOSITORY
+// ✅ FIXED: Sequelize alias mismatch — "user" → "User"
+//    Error was: "User is associated to Booking using an alias.
+//                You've included an alias (user), but it does not
+//                match the alias(es) defined in your association (User)."
+//    The model defines the alias as "User" (capital U), so the
+//    repository must use the exact same string.
+// ═══════════════════════════════════════════════════════════════
 import { Op } from "sequelize";
 import Booking from "../../database/models/core/Booking.js";
 import BookingStatusHistory from "../../database/models/core/BookingStatusHistory.js";
@@ -10,12 +19,15 @@ import Photographer from "../../database/models/core/Photographer.js";
 import User from "../../database/models/core/User.js";
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ UPDATED: includeOptions — `as: "user"` explicit
+// ✅ FIXED: includeOptions
+//    Alias must match the model association exactly.
+//    The Booking model uses `as: "User"` (capital U), so we use
+//    `as: "User"` here too. Same for nested User includes.
 // ═══════════════════════════════════════════════════════════════
 const includeOptions = [
   {
     model: User,
-    as: "user",  // ✅ explicit alias
+    as: "User", // ✅ FIX: was "user", model expects "User"
     attributes: ["id", "firstName", "lastName", "phone", "email"],
   },
   {
@@ -33,7 +45,7 @@ const includeOptions = [
         include: [
           {
             model: User,
-            as: "user",  // ✅ explicit
+            as: "User", // ✅ FIX: was "user"
             attributes: ["id", "firstName", "lastName", "phone", "email"],
           },
         ],
@@ -52,7 +64,7 @@ const includeOptions = [
         include: [
           {
             model: User,
-            as: "user",  // ✅ explicit
+            as: "User", // ✅ FIX: was "user"
             attributes: ["id", "firstName", "lastName", "phone", "email"],
           },
         ],
@@ -143,6 +155,9 @@ export const getBookingById = async (id, options = {}) => {
   });
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GET BOOKINGS BY USER ID (customer)
+// ═══════════════════════════════════════════════════════════════
 export const getBookingsByUserId = async (userId) => {
   return await Booking.findAll({
     where: { userId },
@@ -151,32 +166,47 @@ export const getBookingsByUserId = async (userId) => {
   });
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GET BOOKINGS BY GUIDER ID (provider)
+// ═══════════════════════════════════════════════════════════════
 export const getBookingsByGuiderId = async (guiderId) => {
   const plans = await GuiderPlan.findAll({
     where: { guiderId },
     attributes: ["id"],
   });
   const planIds = plans.map((p) => p.id);
+
+  if (planIds.length === 0) return [];
+
   return await Booking.findAll({
-    where: { guiderPlanId: planIds },
+    where: { guiderPlanId: { [Op.in]: planIds } },
     include: includeOptions,
     order: [["createdAt", "DESC"]],
   });
 };
 
+// ═══════════════════════════════════════════════════════════════
+// GET BOOKINGS BY PHOTOGRAPHER ID (provider)
+// ═══════════════════════════════════════════════════════════════
 export const getBookingsByPhotographerId = async (photographerId) => {
   const plans = await PhotographerPlan.findAll({
     where: { photographerId },
     attributes: ["id"],
   });
   const planIds = plans.map((p) => p.id);
+
+  if (planIds.length === 0) return [];
+
   return await Booking.findAll({
-    where: { photographerPlanId: planIds },
+    where: { photographerPlanId: { [Op.in]: planIds } },
     include: includeOptions,
     order: [["createdAt", "DESC"]],
   });
 };
 
+// ═══════════════════════════════════════════════════════════════
+// UPDATE BOOKING STATUS
+// ═══════════════════════════════════════════════════════════════
 export const updateBookingStatus = async (id, status) => {
   const booking = await Booking.findByPk(id);
   if (!booking) return null;
@@ -184,6 +214,9 @@ export const updateBookingStatus = async (id, status) => {
   return booking;
 };
 
+// ═══════════════════════════════════════════════════════════════
+// SAVE COMPLETION OTP
+// ═══════════════════════════════════════════════════════════════
 export const saveCompletionOtp = async (id, otp, expiresAt) => {
   const booking = await Booking.findByPk(id);
   if (!booking) return null;
@@ -195,7 +228,7 @@ export const saveCompletionOtp = async (id, otp, expiresAt) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// HELPER: Provider bookings
+// HELPER: Provider bookings (for conflict check)
 // ═══════════════════════════════════════════════════════════════
 export const getProviderBookings = async (
   planIds,
@@ -206,6 +239,7 @@ export const getProviderBookings = async (
     status: { [Op.in]: statuses },
   };
   let include = [];
+
   if (providerType === "GUIDER") {
     where.guiderPlanId = { [Op.in]: planIds };
     include.push({

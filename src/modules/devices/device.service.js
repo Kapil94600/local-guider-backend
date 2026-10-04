@@ -1,46 +1,41 @@
 // src/modules/devices/device.service.js
+import { Op } from "sequelize";
 import Device from "../../database/models/core/Device.js";
 import { ApiError } from "../../utils/apiError.js";
 import { logger } from "../../utils/logger.js";
 
 // ═══════════════════════════════════════════════════════════════
 // REGISTER / UPDATE DEVICE TOKEN
-// ✅ FIXED: NO truncation, full logging
+// ✅ Ek token = ek hi user (phone se naya login -> purana owner hatao)
 // ═══════════════════════════════════════════════════════════════
 export const registerDeviceToken = async (userId, token, metadata = {}) => {
-  // ─── Validate ───
   if (!token || typeof token !== "string") {
     throw new ApiError(400, "Token is required");
   }
 
-  // ✅ CRITICAL: sirf trim karo, slice/substring MAT karo
   const cleanToken = token.trim();
+  const shortUser = String(userId).slice(0, 8);
 
-  // ═══════════════════════════════════════════════════════════
-  // ✅ FULL LOGGING
-  // ═══════════════════════════════════════════════════════════
-  console.log("═══════════════════════════════════════════════════");
-  console.log("📱 [Device] REGISTER TOKEN REQUEST");
-  console.log("   User ID       :", userId);
-  console.log("   Token         :", cleanToken);
-  console.log("   Token Length  :", cleanToken.length);
-  console.log("   Token Starts  :", cleanToken.substring(0, 30));
-  console.log("   Token Ends    :", cleanToken.slice(-30));
-  console.log("   Metadata      :", JSON.stringify(metadata));
-  console.log("═══════════════════════════════════════════════════");
+  console.log(
+    `📱 [Device] REGISTER — user: ${shortUser}, length: ${cleanToken.length}, token: ${cleanToken}`
+  );
 
-  // Warning agar chhota token
-  if (cleanToken.length < 50) {
-    console.log(
-      `⚠️ [Device] Token SHORT: ${cleanToken.length} chars (expected ~52)`
-    );
-    logger.warn(
-      `⚠️ [Device] Token short: ${cleanToken.length} chars — ${cleanToken}`
-    );
+  // Expo token hamesha "ExponentPushToken[...]" ya "ExpoPushToken[...]" hota hai
+  if (!/^Expo(nent)?PushToken\[.+\]$/.test(cleanToken)) {
+    throw new ApiError(400, "Invalid Expo push token format");
   }
 
-  // ─── Upsert (create or update) ───
   try {
+    // ✅ Same token kisi aur user ke naam par ho to hata do
+    const removed = await Device.destroy({
+      where: { fcmToken: cleanToken, userId: { [Op.ne]: userId } },
+    });
+    if (removed > 0) {
+      console.log(
+        `🧹 [Device] Token ${removed} dusre user(s) se hata diya (phone ka owner badla)`
+      );
+    }
+
     const [device, created] = await Device.findOrCreate({
       where: { userId, fcmToken: cleanToken },
       defaults: {
@@ -55,33 +50,21 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
     });
 
     if (!created) {
-      await device.update({ lastActiveAt: new Date() });
-      console.log(
-        `✅ [Device] Existing token updated — user: ${userId.slice(0, 8)}, length: ${device.fcmToken.length}`
-      );
-      logger.info(`📱 [Device] Existing token updated for ${userId.slice(0, 8)}`);
+      await device.update({
+        lastActiveAt: new Date(),
+        deviceName: metadata.deviceName || device.deviceName,
+        deviceType: metadata.deviceType || device.deviceType,
+        os: metadata.os || device.os,
+        appVersion: metadata.appVersion || device.appVersion,
+      });
+      logger.info(`📱 [Device] Existing token updated for ${shortUser}`);
     } else {
-      console.log(
-        `✅ [Device] NEW token — user: ${userId.slice(0, 8)}, length: ${device.fcmToken.length}`
-      );
-      logger.info(`📱 [Device] New token registered for ${userId.slice(0, 8)}`);
+      logger.info(`📱 [Device] New token registered for ${shortUser}`);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // ✅ VERIFY FROM DB — Full token save hua ya nahi
-    // ═══════════════════════════════════════════════════════════
-    const savedDevice = await Device.findByPk(device.id);
-    console.log("═══════════════════════════════════════════════════");
-    console.log("🔍 [Device] VERIFY FROM DB");
-    console.log("   Saved Token   :", savedDevice.fcmToken);
-    console.log("   Saved Length  :", savedDevice.fcmToken.length);
-    console.log("   Match         :", savedDevice.fcmToken === cleanToken);
-    console.log("═══════════════════════════════════════════════════");
-
-    return savedDevice;
+    return device;
   } catch (err) {
     if (err.name === "SequelizeUniqueConstraintError") {
-      logger.info(`📱 [Device] Token exists for user ${userId.slice(0, 8)}`);
       const existing = await Device.findOne({
         where: { userId, fcmToken: cleanToken },
       });
@@ -101,16 +84,12 @@ export const registerDeviceToken = async (userId, token, metadata = {}) => {
 export const unregisterDeviceToken = async (userId, token) => {
   if (!token) throw new ApiError(400, "Token is required");
 
-  console.log(
-    `🔓 [Device] Unregistering token for user ${userId.slice(0, 8)} — length: ${token.length}`
-  );
-
   const deleted = await Device.destroy({
-    where: { userId, fcmToken: token },
+    where: { userId, fcmToken: token.trim() },
   });
 
   logger.info(
-    `📱 [Device] Unregistered ${deleted} token(s) for ${userId.slice(0, 8)}`
+    `📱 [Device] Unregistered ${deleted} token(s) for ${String(userId).slice(0, 8)}`
   );
   return { deleted };
 };
@@ -129,15 +108,8 @@ export const getUserDevices = async (userId) => {
 // CLEANUP INVALID TOKENS
 // ═══════════════════════════════════════════════════════════════
 export const cleanupInvalidTokens = async () => {
-  const { Op } = await import("sequelize");
-
-  // Delete truncated tokens (< 50 chars)
   const deleted = await Device.destroy({
-    where: {
-      [Op.or]: [
-        { fcmToken: "ExponentPushToken[]" },
-      ],
-    },
+    where: { fcmToken: "ExponentPushToken[]" },
   });
 
   logger.info(`🧹 [Device] Cleaned ${deleted} invalid tokens`);
