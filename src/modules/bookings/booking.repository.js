@@ -2,11 +2,8 @@
 // ═══════════════════════════════════════════════════════════════
 // BOOKING REPOSITORY
 // ✅ FIXED: Sequelize alias mismatch — "user" → "User"
-//    Error was: "User is associated to Booking using an alias.
-//                You've included an alias (user), but it does not
-//                match the alias(es) defined in your association (User)."
-//    The model defines the alias as "User" (capital U), so the
-//    repository must use the exact same string.
+// ✅ FIXED: Plan attributes (title, description, placeIds) included
+// ✅ FIXED: Place attributes (state, address, image) included
 // ═══════════════════════════════════════════════════════════════
 import { Op } from "sequelize";
 import Booking from "../../database/models/core/Booking.js";
@@ -20,58 +17,81 @@ import User from "../../database/models/core/User.js";
 
 // ═══════════════════════════════════════════════════════════════
 // ✅ FIXED: includeOptions
-//    Alias must match the model association exactly.
-//    The Booking model uses `as: "User"` (capital U), so we use
-//    `as: "User"` here too. Same for nested User includes.
+//    - Alias must match model association exactly ("User" capital U)
+//    - Plan attributes now include title, description, placeIds
+//    - Place attributes now include state, address, image
 // ═══════════════════════════════════════════════════════════════
 const includeOptions = [
+  // ─── Customer (User) ───
   {
     model: User,
-    as: "User", // ✅ FIX: was "user", model expects "User"
+    as: "User",
     attributes: ["id", "firstName", "lastName", "phone", "email"],
   },
+
+  // ─── Place ───
   {
     model: Place,
     as: "place",
-    attributes: ["id", "name", "city"],
+    attributes: ["id", "name", "city", "state", "address", "image"],
   },
+
+  // ─── Guider Plan ───
   {
     model: GuiderPlan,
     as: "guiderPlan",
+    attributes: [
+      "id",
+      "title",          // ✅ ADDED
+      "description",    // ✅ ADDED
+      "price",
+      "duration",
+      "placeIds",       // ✅ ADDED
+      "isActive",       // ✅ ADDED
+    ],
     include: [
       {
         model: Guider,
         as: "guider",
+        attributes: ["id", "fullName", "profilePhotoUrl", "userId"],
         include: [
           {
             model: User,
-            as: "User", // ✅ FIX: was "user"
+            as: "User",
             attributes: ["id", "firstName", "lastName", "phone", "email"],
           },
         ],
-        attributes: ["id", "fullName", "profilePhotoUrl", "userId"],
       },
     ],
-    attributes: ["id", "price", "duration"],
   },
+
+  // ─── Photographer Plan ───
   {
     model: PhotographerPlan,
     as: "photographerPlan",
+    attributes: [
+      "id",
+      "title",          // ✅ ADDED
+      "description",    // ✅ ADDED
+      "price",
+      "duration",
+      "placeIds",       // ✅ ADDED
+      "isActive",       // ✅ ADDED
+    ],
     include: [
       {
         model: Photographer,
         as: "photographer",
+        attributes: ["id", "fullName", "profilePhotoUrl", "userId"],
         include: [
           {
             model: User,
-            as: "User", // ✅ FIX: was "user"
+            as: "User",
             attributes: ["id", "firstName", "lastName", "phone", "email"],
           },
         ],
-        attributes: ["id", "fullName", "profilePhotoUrl", "userId"],
       },
     ],
-    attributes: ["id", "price", "duration"],
   },
 ];
 

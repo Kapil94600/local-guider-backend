@@ -1,7 +1,9 @@
 // src/modules/bookings/booking.service.js
 // ═══════════════════════════════════════════════════════════════
 // BOOKING SERVICE — full status flow + OTP + refunds + notifications
-// ✅ Rich push notifications with full booking details
+// ✅ FIXED: placeId validation — throws error if invalid place
+// ✅ FIXED: placeId explicitly set in createBooking payload
+// ✅ FIXED: Sequelize alias "User" (capital U)
 // ═══════════════════════════════════════════════════════════════
 import {
   createBooking,
@@ -219,7 +221,7 @@ const checkBookingConflict = async (
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ HELPER: Notify all admins about a booking
+// HELPER: Notify all admins
 // ═══════════════════════════════════════════════════════════════
 const notifyAllAdmins = async ({
   title,
@@ -271,7 +273,7 @@ const notifyAllAdmins = async ({
 };
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ HELPER: Build rich push text for booking
+// HELPER: Build rich push text
 // ═══════════════════════════════════════════════════════════════
 const buildBookingPushText = ({
   customerName,
@@ -320,6 +322,7 @@ const buildBookingPushText = ({
 
 // ═══════════════════════════════════════════════════════════════
 // ADD BOOKING
+// ✅ FIXED: placeId validation + explicit set
 // ═══════════════════════════════════════════════════════════════
 export const addBooking = async (userId, payload) => {
   let totalAmount = 0;
@@ -328,20 +331,41 @@ export const addBooking = async (userId, payload) => {
   let duration = 0;
   let providerUserId = null;
 
+  // ✅ Debug log — see what frontend sends
+  logger.info(
+    `📥 addBooking payload: ${JSON.stringify({
+      placeId: payload.placeId,
+      guiderPlanId: payload.guiderPlanId,
+      photographerPlanId: payload.photographerPlanId,
+      bookingDate: payload.bookingDate,
+    })}`
+  );
+
+  // ✅ FIX: Validate placeId FIRST
+  const finalPlaceId = payload.placeId || null;
+
+  if (!finalPlaceId) {
+    logger.warn(`⚠️ Booking created WITHOUT placeId for user ${userId}`);
+    throw new ApiError(400, "Place is required for booking");
+  }
+
+  // ✅ FIX: Verify place exists
+  const place = await Place.findByPk(finalPlaceId, {
+    attributes: ["id", "name", "city"],
+  });
+
+  if (!place) {
+    logger.warn(`⚠️ Invalid placeId: ${finalPlaceId}`);
+    throw new ApiError(400, "Selected place not found");
+  }
+
+  const placeName = place.name || "Unknown Place";
+
   // ✅ Fetch customer for notification text
   const customer = await User.findByPk(userId, {
     attributes: ["id", "firstName", "lastName", "email", "phone"],
   });
   const customerName = getCustomerName(customer);
-
-  // ✅ Fetch place name
-  let placeName = "Unknown Place";
-  if (payload.placeId) {
-    const place = await Place.findByPk(payload.placeId, {
-      attributes: ["id", "name"],
-    });
-    if (place) placeName = place.name;
-  }
 
   // ✅ Fetch provider details
   let providerName = "Provider";
@@ -357,6 +381,7 @@ export const addBooking = async (userId, payload) => {
           include: [
             {
               model: User,
+              as: "User",
               attributes: ["id", "firstName", "lastName"],
             },
           ],
@@ -364,17 +389,19 @@ export const addBooking = async (userId, payload) => {
       ],
     });
 
-    if (plan) {
-      totalAmount += parseFloat(plan.price) || 0;
-      providerId = plan.guiderId;
-      providerType = "GUIDER";
-      providerRole = "GUIDER";
-      duration = plan.duration || 0;
+    if (!plan) {
+      throw new ApiError(400, "Selected guider plan not found");
+    }
 
-      if (plan.guider) {
-        providerUserId = plan.guider.userId;
-        providerName = getProviderName(plan.guider, null);
-      }
+    totalAmount += parseFloat(plan.price) || 0;
+    providerId = plan.guiderId;
+    providerType = "GUIDER";
+    providerRole = "GUIDER";
+    duration = plan.duration || 0;
+
+    if (plan.guider) {
+      providerUserId = plan.guider.userId;
+      providerName = getProviderName(plan.guider, null);
     }
   } else if (payload.photographerPlanId) {
     const plan = await PhotographerPlan.findByPk(payload.photographerPlanId, {
@@ -386,6 +413,7 @@ export const addBooking = async (userId, payload) => {
           include: [
             {
               model: User,
+              as: "User",
               attributes: ["id", "firstName", "lastName"],
             },
           ],
@@ -393,18 +421,22 @@ export const addBooking = async (userId, payload) => {
       ],
     });
 
-    if (plan) {
-      totalAmount += parseFloat(plan.price) || 0;
-      providerId = plan.photographerId;
-      providerType = "PHOTOGRAPHER";
-      providerRole = "PHOTOGRAPHER";
-      duration = plan.duration || 0;
-
-      if (plan.photographer) {
-        providerUserId = plan.photographer.userId;
-        providerName = getProviderName(null, plan.photographer);
-      }
+    if (!plan) {
+      throw new ApiError(400, "Selected photographer plan not found");
     }
+
+    totalAmount += parseFloat(plan.price) || 0;
+    providerId = plan.photographerId;
+    providerType = "PHOTOGRAPHER";
+    providerRole = "PHOTOGRAPHER";
+    duration = plan.duration || 0;
+
+    if (plan.photographer) {
+      providerUserId = plan.photographer.userId;
+      providerName = getProviderName(null, plan.photographer);
+    }
+  } else {
+    throw new ApiError(400, "Either guiderPlanId or photographerPlanId is required");
   }
 
   // Conflict check
@@ -423,16 +455,10 @@ export const addBooking = async (userId, payload) => {
     }
   }
 
-  if (
-    !payload.guiderPlanId &&
-    !payload.photographerPlanId &&
-    payload.totalAmount
-  ) {
-    totalAmount = payload.totalAmount;
-  }
-
+  // ✅ FIX: Explicitly set placeId
   const booking = await createBooking({
     ...payload,
+    placeId: finalPlaceId,   // ✅ Explicit
     userId,
     totalAmount,
     status: "PENDING",
@@ -457,10 +483,10 @@ export const addBooking = async (userId, payload) => {
   const bookingIdShort = booking.id.slice(0, 8);
 
   // ═══════════════════════════════════════════════════════════════
-  // ✅ RICH NOTIFICATIONS
+  // NOTIFICATIONS
   // ═══════════════════════════════════════════════════════════════
 
-  // ── 1. Notify PROVIDER with full details ──
+  // ── 1. Notify PROVIDER ──
   if (providerUserId) {
     try {
       const pushText = buildBookingPushText({
@@ -494,7 +520,7 @@ export const addBooking = async (userId, payload) => {
     }
   }
 
-  // ── 2. Notify CUSTOMER (confirmation) ──
+  // ── 2. Notify CUSTOMER ──
   try {
     await addNotification({
       userId,
@@ -512,7 +538,7 @@ export const addBooking = async (userId, payload) => {
     logger.error(`Customer booking notification failed: ${notifErr.message}`);
   }
 
-  // ── 3. ✅ Notify ALL ADMINS with full details ──
+  // ── 3. Notify ALL ADMINS ──
   try {
     const pushText = buildBookingPushText({
       customerName,
@@ -703,7 +729,7 @@ export const changeBookingStatus = async (
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ✅ NOTIFICATIONS (outside transaction)
+  // NOTIFICATIONS (outside transaction)
   // ═══════════════════════════════════════════════════════════════
   const updatedBooking = await getBookingById(id);
   const customer = await User.findByPk(booking.userId, {
@@ -810,7 +836,7 @@ export const changeBookingStatus = async (
     }
   }
 
-  // ── ✅ Notify ADMINS on every status change ──
+  // ── Notify ADMINS ──
   try {
     await notifyAllAdmins({
       title: pushText.title,

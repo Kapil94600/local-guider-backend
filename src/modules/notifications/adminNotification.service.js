@@ -6,25 +6,8 @@ import { sendEmail } from "../../utils/emailService.js";
 import { getBroadcastEmailTemplate } from "../../utils/emailTemplates.js";
 import { logger } from "../../utils/logger.js";
 
-// ═══════════════════════════════════════════════════════════════
-// CHUNK SIZE for bulk operations
-// ═══════════════════════════════════════════════════════════════
 const CHUNK_SIZE = 50;
 
-// ═══════════════════════════════════════════════════════════════
-// Determine primary channel
-// ═══════════════════════════════════════════════════════════════
-const determinePrimaryChannel = (channels = []) => {
-  if (channels.includes("IN_APP")) return "IN_APP";
-  if (channels.includes("PUSH")) return "PUSH";
-  if (channels.includes("EMAIL")) return "EMAIL";
-  if (channels.includes("SMS")) return "SMS";
-  return "IN_APP";
-};
-
-// ═══════════════════════════════════════════════════════════════
-// Send in chunks with allSettled
-// ═══════════════════════════════════════════════════════════════
 const sendInChunks = async (items, sendFn) => {
   for (let i = 0; i < items.length; i += CHUNK_SIZE) {
     const chunk = items.slice(i, i + CHUNK_SIZE);
@@ -32,15 +15,12 @@ const sendInChunks = async (items, sendFn) => {
   }
 };
 
-// ═══════════════════════════════════════════════════════════════
-// BROADCAST NOTIFICATION
-// ═══════════════════════════════════════════════════════════════
 export const broadcastNotification = async ({
   title,
   message,
   type = "SYSTEM",
   targetRole = "ALL",
-  channels = ["PUSH", "EMAIL"],
+  channels = ["IN_APP", "PUSH", "EMAIL"],
 }) => {
   let where = {};
   if (targetRole && targetRole !== "ALL") where.role = targetRole;
@@ -52,8 +32,8 @@ export const broadcastNotification = async ({
 
   if (users.length === 0) return [];
 
-  const primaryChannel = determinePrimaryChannel(channels);
-
+  // ✅ In-app list ke liye row hamesha "IN_APP" channel se banti hai,
+  // taaki list aur unread count (jo IN_APP par filter ho sakte hain) me dikhe.
   const notifications = await Notification.bulkCreate(
     users.map((user) => ({
       userId: user.id,
@@ -62,7 +42,7 @@ export const broadcastNotification = async ({
       type,
       data: {},
       isRead: false,
-      channel: primaryChannel,
+      channel: "IN_APP",
       sentAt: new Date(),
     }))
   );
@@ -77,10 +57,10 @@ export const broadcastNotification = async ({
       if (channels.includes("PUSH")) {
         await sendInChunks(users, async (user) => {
           try {
-            await sendPushNotification(user.id, title, message, { type });
+            await sendPushNotification(user.id, title, message, { type }, type);
           } catch (err) {
             logger.error(
-              `Push failed for ${user.id.slice(0, 8)}: ${err.message}`
+              `Push failed for ${String(user.id).slice(0, 8)}: ${err.message}`
             );
           }
         });
@@ -92,11 +72,7 @@ export const broadcastNotification = async ({
 
         await sendInChunks(usersWithEmail, async (user) => {
           try {
-            await sendEmail({
-              to: user.email,
-              subject: title,
-              html,
-            });
+            await sendEmail({ to: user.email, subject: title, html });
           } catch (err) {
             logger.error(`Email failed for ${user.email}: ${err.message}`);
           }
@@ -112,9 +88,6 @@ export const broadcastNotification = async ({
   return notifications;
 };
 
-// ═══════════════════════════════════════════════════════════════
-// FETCH ALL NOTIFICATIONS (admin list)
-// ═══════════════════════════════════════════════════════════════
 export const fetchAllNotifications = async ({ page = 1, limit = 10 } = {}) => {
   const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
   const safePage = Math.max(parseInt(page) || 1, 1);
